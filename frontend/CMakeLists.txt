@@ -43,7 +43,7 @@ if(ANDROID)
   # SDL's Android activity loads the program as libmain.so and calls its SDL_main.
   add_library(main SHARED src/main.cpp src/game_module.cpp src/ph_hooks.cpp src/ph_stick.cpp src/ph_text.cpp
               ${PH_HD_FONT_SRC} src/png.cpp src/android_bridge.cpp src/gl_present.cpp src/gles_compat.cpp
-              src/mod_bundle.cpp src/mod_romfs.cpp src/mod_manager.cpp)
+              src/mod_bundle.cpp src/mod_romfs.cpp src/mod_manager.cpp src/achievements.cpp)
   target_include_directories(main PRIVATE src ${CMAKE_SOURCE_DIR}/third_party/stb)
   target_compile_options(main PRIVATE -O2)
   target_link_libraries(main PRIVATE ntr_runtime ntr_common ph_mods_sdk lua_core miniz_core SDL3::SDL3-static android log dl
@@ -105,7 +105,7 @@ endif()
 # ---- the program ----
 add_executable(PhantomHourglass src/main.cpp src/game_module.cpp src/ph_hooks.cpp src/ph_stick.cpp src/ph_text.cpp
                ${PH_HD_FONT_SRC} src/png.cpp src/gl_present.cpp src/menu.cpp
-               src/mod_bundle.cpp src/mod_romfs.cpp src/mod_manager.cpp)
+               src/mod_bundle.cpp src/mod_romfs.cpp src/mod_manager.cpp src/achievements.cpp)
 target_include_directories(PhantomHourglass PRIVATE src ${CMAKE_SOURCE_DIR}/third_party/stb)
 set_target_properties(PhantomHourglass PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 if(PH_ROM)

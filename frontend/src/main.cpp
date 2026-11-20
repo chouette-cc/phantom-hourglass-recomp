@@ -45,6 +45,7 @@
 #include <string>
 #include <vector>
 
+#include "achievements.hpp"
 #include "game_module.hpp"
 #include "layout.hpp"
 #include "mod_manager.hpp"
@@ -93,6 +94,7 @@ std::atomic<int> hd_text{-1};
 std::atomic<int> custom_textures{-1};
 std::atomic<bool> reload_mods{false};
 std::atomic<int> loaded_mod_count{0};
+std::atomic<ph::Achievements*> achievements{nullptr};
 }  // namespace ph::pad
 
 namespace {
@@ -427,6 +429,9 @@ struct Shared {
     int menu_selected = 0;
     int menu_page = 0;
     int menu_selected_mod = 0;
+    int menu_ach_filter = 0;
+    int menu_ach_scroll = 0;
+    bool menu_ach_reset_confirm = false;
     bool video_dirty = false;
     std::atomic<int> mod_layout_request{-1};
     struct ModAction {
@@ -444,6 +449,7 @@ struct Shared {
         mod_actions.push_back(std::move(a));
     }
     ph::ModManager* mods = nullptr;
+    ph::Achievements achievements;
     std::mutex shot_name_mutex;
     std::string shot_custom_name;
     std::atomic<bool> gpu_failed{false};  // the GPU renderer could not start
@@ -520,6 +526,7 @@ public:
 
     bool on_frame(const ntr::Frame& frame) override {
         const uint64_t f = ++frames_;
+        if (rt_) s_.achievements.tick(*rt_, SDL_GetTicks());
         last_ = frame;
         have_last_ = true;
         if (frame.top && frame.bottom) {
@@ -752,6 +759,7 @@ public:
         const int slot = load_slot_;
         load_slot_ = 0;
         if (ok) ph::hd_text_reset();
+        if (ok) s_.achievements.on_state_loaded();
         if (mods_) mods_->on_load_state(slot, ok);
         if (slot == kResumeSlot) return s_.say(ok ? "Continued from where you left off" : "Could not continue: " + error);
         s_.say(ok ? "Loaded slot " + std::to_string(slot) : "Slot " + std::to_string(slot) + " not loaded: " + error);
@@ -807,8 +815,8 @@ private:
     // Shows the frame (and the FPS counter, a note, the PC's menu) and applies a renderer change asked for in the menu.
     void draw(const ntr::Frame& frame, bool count_game_frame = true, const std::string& window_shot_path = {}) {
         Settings view;
-        bool menu_open, video_dirty;
-        int selected, page, selected_mod;
+        bool menu_open, video_dirty, ach_reset_confirm = false;
+        int selected, page, selected_mod, ach_filter = 0, ach_scroll = 0;
         {
             std::lock_guard<std::mutex> lock(s_.view_mutex);
             view = s_.view;
@@ -816,7 +824,10 @@ private:
             selected = s_.menu_selected;
             page = s_.menu_page;
             selected_mod = s_.menu_selected_mod;
-            (void)selected, (void)page, (void)selected_mod;
+            ach_filter = s_.menu_ach_filter;
+            ach_scroll = s_.menu_ach_scroll;
+            ach_reset_confirm = s_.menu_ach_reset_confirm;
+            (void)selected, (void)page, (void)selected_mod, (void)ach_filter, (void)ach_scroll, (void)ach_reset_confirm;
             video_dirty = s_.video_dirty;
             s_.video_dirty = false;
         }
@@ -920,6 +931,7 @@ private:
             gl_->fill({x - 8 * ui, float(h) - size - 28 * ui, tw + 16 * ui, size + 16 * ui}, 0xC0000000);
             gl_->text(x, float(h) - size - 20 * ui, size, note, 0xFFFFFFFF);
         }
+        s_.achievements.draw_toast(*gl_, w, h, ui, SDL_GetTicks());
 #ifndef __ANDROID__
         if (menu_open) {
             // The slots' pictures, read again when a slot changed.
@@ -940,6 +952,9 @@ private:
             menu.page = page;
             menu.selected = selected;
             menu.selected_mod = selected_mod;
+            menu.ach_filter = ach_filter;
+            menu.ach_scroll = ach_scroll;
+            menu.ach_reset_confirm = ach_reset_confirm;
             ph::MenuState ms{view.layout, view.gpu, view.scale, view.smooth, view.fps, view.fullscreen, s_.gpu_failed.load(),
                              view.slot, times_};
             ms.fps_corner = view.fps_corner;
@@ -956,6 +971,7 @@ private:
             ms.custom_textures = view.custom_textures;
             if (mods_) ms.mods = mods_->summaries();
             ms.selected_mod = selected_mod;
+            if (page == 3) ms.achievements = s_.achievements.snapshot();
             const int layer = view.layout == Layout::Top ? 0 : 1;  // the screen the player looks at
             menu.draw(*gl_, ms, float(w), float(h), ui, float(ph::pad::game_fps10.load()) / 10.0f,
                       [&](int slot, const ph::Rect& r) { gl_->thumbnail(slot, layer, r); });
@@ -1379,6 +1395,8 @@ int main(int argc, char** argv) {
         mods.set_save_blob_dir(save_path.parent_path() / (save_path.stem().string() + ".moddata"));
         shared.mods = &mods;
     }
+    shared.achievements.load(data_dir / "saves" / "achievements.txt", read_only_save || testing);
+    ph::pad::achievements.store(&shared.achievements);
     Host host(shared, window, audio, std::move(script), exit_after, unpaced);
     host.set_resume(continue_arg && !testing, !testing);
     if (mods_enabled) host.set_mods(&mods);
@@ -1460,6 +1478,9 @@ int main(int argc, char** argv) {
         shared.menu_selected = menu.selected;
         shared.menu_page = menu.page;
         shared.menu_selected_mod = menu.selected_mod;
+        shared.menu_ach_filter = menu.ach_filter;
+        shared.menu_ach_scroll = menu.ach_scroll;
+        shared.menu_ach_reset_confirm = menu.ach_reset_confirm;
         menu_open = menu.open;
 #endif
         if (video) shared.video_dirty = true;
@@ -1487,6 +1508,7 @@ int main(int argc, char** argv) {
         ms.custom_textures = settings.custom_textures;
         if (mods_enabled) ms.mods = mods.summaries();
         ms.selected_mod = menu.selected_mod;
+        if (menu.page == 3) ms.achievements = shared.achievements.snapshot();
         return ms;
     };
     auto menu_done = [&](const ph::MenuState& ms, ph::MenuResult r) {
@@ -1533,6 +1555,10 @@ int main(int argc, char** argv) {
         if (r == ph::MenuResult::Continue) {
             shared.state_load = kResumeSlot;
             menu.open = false;
+        }
+        if (r == ph::MenuResult::ResetAchievements) {
+            shared.achievements.reset_all();
+            shared.say("Achievements reset");
         }
         publish(video);
     };
@@ -1592,6 +1618,14 @@ int main(int argc, char** argv) {
                         ph::MenuState ms = menu_state();
                         menu_done(ms, menu.click(e.button.x * density, e.button.y * density, float(win_pw), float(win_ph),
                                                  ui, ms));
+                    }
+                    break;
+                case SDL_EVENT_MOUSE_WHEEL:
+                    if (testing) break;
+                    if (menu.open && menu.page == 3) {
+                        ph::MenuState ms = menu_state();
+                        menu.wheel(e.wheel.y, ms);
+                        publish(false);
                     }
                     break;
 #endif
@@ -1842,6 +1876,22 @@ int main(int argc, char** argv) {
             SDL_RenderDebugText(renderer, (lw - tw) / 2, lh - 22, note.c_str());
             SDL_SetRenderScale(renderer, 1, 1);
         }
+        {
+            ph::AchievementToast toast;
+            if (shared.achievements.active_toast(SDL_GetTicks(), toast)) {
+                const float k = std::max(1.0f, float(win_ph) / 360.0f);
+                const std::string line = "TROPHY: " + toast.title + " (+" + std::to_string(toast.points) + " pts)";
+                const float tw = 8.0f * float(line.size()), lw = float(win_pw) / k;
+                SDL_SetRenderScale(renderer, k, k);
+                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(renderer, 22, 24, 34, 232);
+                const SDL_FRect box{(lw - tw) / 2 - 8, 8, tw + 16, 18};
+                SDL_RenderFillRect(renderer, &box);
+                SDL_SetRenderDrawColor(renderer, 245, 197, 66, 255);
+                SDL_RenderDebugText(renderer, (lw - tw) / 2, 13, line.c_str());
+                SDL_SetRenderScale(renderer, 1, 1);
+            }
+        }
         SDL_RenderPresent(renderer);
         if (!fresh) SDL_Delay(1);
         }
@@ -1860,6 +1910,7 @@ int main(int argc, char** argv) {
     shared.quit = true;
     SDL_WaitThread(thread, nullptr);
     ntr::texpack::flush_dumps();
+    ph::pad::achievements.store(nullptr);
 #ifdef __ANDROID__
     if (lifecycle_watch_registered) SDL_RemoveEventWatch(watch_android_lifecycle, &shared);
 #endif

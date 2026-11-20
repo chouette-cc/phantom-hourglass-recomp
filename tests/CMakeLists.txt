@@ -47,3 +47,9 @@ if(TARGET lua_core AND TARGET miniz_core AND TARGET ph_mods_sdk)
   endif()
   add_test(NAME mods COMMAND test_mods)
 endif()
+
+# Local offline achievements evaluator & persistence (RetroAchievements set #14323).
+add_executable(test_achievements test_achievements.cpp ${PROJECT_SOURCE_DIR}/frontend/src/achievements.cpp)
+target_include_directories(test_achievements PRIVATE ${PROJECT_SOURCE_DIR}/frontend/src ${PROJECT_SOURCE_DIR}/runtime/include)
+target_link_libraries(test_achievements PRIVATE SDL3::Headers)
+add_test(NAME achievements COMMAND test_achievements)

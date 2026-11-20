@@ -4,6 +4,10 @@
 #include <atomic>
 #include <cstdint>
 
+namespace ph {
+class Achievements;
+}
+
 namespace ph::pad {
 
 extern std::atomic<uint32_t> held;  // DS buttons held on the pad (ntr::Key bits)
@@ -33,5 +37,6 @@ extern std::atomic<int> hd_text;           // HD vector dialogue text (0 off, 1 
 extern std::atomic<int> custom_textures;   // custom HD texture pack (0 off, 1 on); -1: no change
 extern std::atomic<bool> reload_mods;      // hot-reload all mods from <data-dir>/mods/
 extern std::atomic<int> loaded_mod_count;  // number of active loaded mods (for Android menu)
+extern std::atomic<ph::Achievements*> achievements;  // live achievements instance for Android JNI
 
 }  // namespace ph::pad

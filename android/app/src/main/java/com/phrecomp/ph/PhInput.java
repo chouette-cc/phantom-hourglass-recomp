@@ -85,4 +85,10 @@ public final class PhInput {
 
     /** Number of currently active loaded mods. */
     public static native int nativeLoadedModCount();
+
+    /** Tab-separated snapshot of all local achievements (header line + one line per achievement). */
+    public static native String nativeAchievementsData();
+
+    /** Reset all locally unlocked achievements. */
+    public static native void nativeResetAchievements();
 }
