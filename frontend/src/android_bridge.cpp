@@ -83,6 +83,10 @@ extern "C" JNIEXPORT void JNICALL Java_com_phrecomp_ph_PhInput_nativeSetTextures
     ph::pad::textures.store(int(mode));
 }
 
+extern "C" JNIEXPORT void JNICALL Java_com_phrecomp_ph_PhInput_nativeSetCustomTextures(JNIEnv*, jclass, jboolean on) {
+    ph::pad::custom_textures.store(on != JNI_FALSE ? 1 : 0);
+}
+
 extern "C" JNIEXPORT void JNICALL Java_com_phrecomp_ph_PhInput_nativeSetWide(JNIEnv*, jclass, jint mode) {
     ph::pad::wide_mode.store(std::clamp(int(mode), 0, 2));
 }

@@ -8,6 +8,7 @@ add_library(ntr_runtime STATIC
   src/gx_match.cpp
   src/gx_stream.cpp
   src/melon_platform.cpp
-  src/savestate.cpp)
-target_include_directories(ntr_runtime PUBLIC include PRIVATE src)
+  src/savestate.cpp
+  src/texpack.cpp)
+target_include_directories(ntr_runtime PUBLIC include PRIVATE src ${CMAKE_SOURCE_DIR}/third_party/stb)
 target_link_libraries(ntr_runtime PUBLIC melonds_core ntr_common)

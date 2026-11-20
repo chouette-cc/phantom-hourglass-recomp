@@ -70,10 +70,30 @@ ffcc_patch(gpu3d_src GPU3D.cpp "bool FfccGxReplaying = false;\n"
   "bool FfccGxReplaying = false;\nint FfccStableUV = 0; // ffcc patch\nint FfccSmoothTex = 0; // ffcc patch\nstatic bool ffcc_subdividing = false;\nstatic int ffcc_added_p = 0, ffcc_added_v = 0, ffcc_base_p = 0, ffcc_base_v = 0, ffcc_last_p = 0, ffcc_last_v = 0;\n#define FFCC_UV_GRID 4\n")
 ffcc_write_patched(gpu3d_src ${CMAKE_CURRENT_BINARY_DIR}/melonds_patched/GPU3D.cpp)
 
+# GPU3D_Texcache.h (patched copy pre-included by GPU_OpenGL.cpp, GPU3D_OpenGL.cpp, GPU3D_Compute.cpp):
+# adds optional 3D texture dumping and HD replacement by XXH64 hash (works identically for OpenGL GPU and Compute).
+file(READ ${MS}/GPU3D_Texcache.h gpu3d_texcache_src)
+string(REPLACE "\r\n" "\n" gpu3d_texcache_src "${gpu3d_texcache_src}")
+ffcc_patch(gpu3d_texcache_src GPU3D_Texcache.h "namespace melonDS\n{\n"
+  "extern \"C\" {\nuint32_t ntr_texpack_generation();\nint ntr_texpack_3d_active();\nint ntr_texpack_dump_active();\nuint64_t ntr_texpack_hash(const void* data, uint32_t bytes);\nvoid ntr_texpack_dump_3d(uint64_t hash, uint32_t w, uint32_t h, const uint32_t* rgb6a5);\nunsigned ntr_texpack_get_3d(uint64_t hash, int use_tex_storage);\n}\n\nnamespace melonDS\n{\n")
+ffcc_patch(gpu3d_texcache_src GPU3D_Texcache.h "    bool Update(u8& clrBitmapDirty)\n    {\n"
+  "    bool Update(u8& clrBitmapDirty)\n    {\n        const u32 ph_gen = ntr_texpack_generation();\n        if (ph_gen != TexpackGen)\n        {\n            TexpackGen = ph_gen;\n            Reset();\n            clrBitmapDirty = 3;\n            return true;\n        }\n")
+ffcc_patch(gpu3d_texcache_src GPU3D_Texcache.h "                FreeTextures[entry.WidthLog2][entry.HeightLog2].push_back(entry.Texture);\n"
+  "                if (!entry.IsCustom) FreeTextures[entry.WidthLog2][entry.HeightLog2].push_back(entry.Texture);\n")
+ffcc_patch(gpu3d_texcache_src GPU3D_Texcache.h "        auto& texArrays = TexArrays[widthLog2][heightLog2];\n"
+  "        if (ntr_texpack_3d_active())\n        {\n            const u64 ph_hash = ntr_texpack_hash(DecodingBuffer, width * height * 4);\n            if (ntr_texpack_dump_active()) ntr_texpack_dump_3d(ph_hash, width, height, DecodingBuffer);\n            const unsigned ph_custom = ntr_texpack_get_3d(ph_hash, 0);\n            if (ph_custom != 0)\n            {\n                entry.IsCustom = true;\n                entry.Texture = TexArrayEntry{static_cast<TexHandleT>(ph_custom), 0};\n                textureHandle = entry.Texture.TextureID;\n                layer = 0;\n                helper = &Cache.emplace(std::make_pair(key, entry)).first->second.LastVariant;\n                return;\n            }\n        }\n\n        auto& texArrays = TexArrays[widthLog2][heightLog2];\n")
+ffcc_patch(gpu3d_texcache_src GPU3D_Texcache.h "        u64 TexPalHash;\n    };\n"
+  "        u64 TexPalHash;\n        bool IsCustom;\n    };\n")
+ffcc_patch(gpu3d_texcache_src GPU3D_Texcache.h "    u32 DecodingBuffer[1024*1024];\n"
+  "    u32 TexpackGen = 0;\n    u32 DecodingBuffer[1024*1024];\n")
+ffcc_write_patched(gpu3d_texcache_src ${CMAKE_CURRENT_BINARY_DIR}/melonds_patched/GPU3D_Texcache_patched.h)
+
 # GPU3D_OpenGL.cpp: with FfccWideExtra set, the 3D texture is (256 + 2 * extra) pixels wide (a widescreen picture; the
 # geometry engine's viewport and the game's projection are widened to match, a game hook sets them; not used by Phantom Hourglass).
 file(READ ${MS}/GPU3D_OpenGL.cpp gpu3d_gl_src)
 string(REPLACE "\r\n" "\n" gpu3d_gl_src "${gpu3d_gl_src}")
+ffcc_patch(gpu3d_gl_src GPU3D_OpenGL.cpp "#include \"GPU_OpenGL.h\"\n"
+  "#include \"GPU3D_Texcache_patched.h\"\n#include \"GPU_OpenGL.h\"\n")
 ffcc_patch(gpu3d_gl_src GPU3D_OpenGL.cpp "    if (betterpolygons == BetterPolygons && scale == ScaleFactor)\n        return;\n"
   "    if (betterpolygons == BetterPolygons && scale == ScaleFactor && ScreenW == (256 + 2 * FfccWideExtra) * scale) // ffcc patch\n        return;\n")
 ffcc_patch(gpu3d_gl_src GPU3D_OpenGL.cpp "    ScreenW = 256 * scale;\n"
@@ -118,6 +138,10 @@ ffcc_write_patched(gpu3d_gl_src ${CMAKE_CURRENT_BINARY_DIR}/melonds_patched/GPU3
 # A's picture fills it, and engine B's and the display modes' 256-wide pictures sit in the middle (FinalPassFS.glsl).
 file(READ ${MS}/GPU_OpenGL.cpp gpu_gl_src)
 string(REPLACE "\r\n" "\n" gpu_gl_src "${gpu_gl_src}")
+ffcc_patch(gpu_gl_src GPU_OpenGL.cpp "#include \"GPU_OpenGL.h\"\n"
+  "#include \"GPU3D_Texcache_patched.h\"\n#include \"GPU_OpenGL.h\"\n")
+ffcc_patch(gpu_gl_src GPU_OpenGL.cpp "GLRenderer::~GLRenderer()\n{\n"
+  "extern \"C\" void ntr_texpack_clear_gl();\nGLRenderer::~GLRenderer()\n{\n    ntr_texpack_clear_gl();\n")
 ffcc_patch(gpu_gl_src GPU_OpenGL.cpp "void GLRenderer::SetScaleFactor(int scale)\n{\n    if (scale == ScaleFactor)\n        return;\n"
   "void GLRenderer::SetScaleFactor(int scale)\n{\n    if (scale == ScaleFactor && ScreenW == (256 + 2 * FfccWideExtra) * scale) // ffcc patch\n        return;\n")
 ffcc_patch(gpu_gl_src GPU_OpenGL.cpp "    ScaleFactor = scale;\n    ScreenW = 256 * scale;\n    ScreenH = 192 * scale;\n\n    const GLenum fbassign2[]"
@@ -131,8 +155,35 @@ ffcc_patch(gpu_gl_src GPU_OpenGL.cpp "namespace melonDS\n{\n"
 ffcc_write_patched(gpu_gl_src ${CMAKE_CURRENT_BINARY_DIR}/melonds_patched/GPU_OpenGL.cpp)
 
 # GPU2D_OpenGL.cpp: the compositor reads the 3D layer's middle 256 pixels when that texture is wider.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/ph_texpack_2d.inc)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/ph_texpack_2d.inc ph_texpack_2d_body)
+string(REPLACE "\r\n" "\n" ph_texpack_2d_body "${ph_texpack_2d_body}")
 file(READ ${MS}/GPU2D_OpenGL.cpp gpu2d_gl_src)
 string(REPLACE "\r\n" "\n" gpu2d_gl_src "${gpu2d_gl_src}")
+ffcc_patch(gpu2d_gl_src GPU2D_OpenGL.cpp "#include \"GPU3D.h\"\n"
+  "#include \"GPU3D.h\"\n#include <vector>\n")
+ffcc_patch(gpu2d_gl_src GPU2D_OpenGL.cpp "namespace melonDS\n{\n"
+  "namespace melonDS\n{\n${ph_texpack_2d_body}\n")
+ffcc_patch(gpu2d_gl_src GPU2D_OpenGL.cpp "    SpriteRenderTransULoc = glGetUniformLocation(SpriteShader, \"uRenderTransparent\");\n"
+  "    SpriteRenderTransULoc = glGetUniformLocation(SpriteShader, \"uRenderTransparent\");\n    glUniform1i(glGetUniformLocation(SpriteShader, \"CustomSpriteTex\"), 3);\n    ph_use_custom_spr_uloc = glGetUniformLocation(SpriteShader, \"uUseCustomSprite\");\n    glUniform1i(ph_use_custom_spr_uloc, 0);\n")
+ffcc_patch(gpu2d_gl_src GPU2D_OpenGL.cpp "    memset(TempPalBuffer, 0, sizeof(TempPalBuffer));\n}\n"
+  "    memset(TempPalBuffer, 0, sizeof(TempPalBuffer));\n    memset(ph_custom_bg_tex[GPU2D.Num], 0, sizeof(ph_custom_bg_tex[0]));\n    memset(ph_custom_spr_tex[GPU2D.Num], 0, sizeof(ph_custom_spr_tex[0]));\n}\n")
+ffcc_patch(gpu2d_gl_src GPU2D_OpenGL.cpp "    if (Parent.NeedPartialRender)\n        comp_dirty = true;\n"
+  "    if (Parent.NeedPartialRender)\n        comp_dirty = true;\n    if (const uint32_t ph_gen = ntr_texpack_generation(); ph_gen != ph_tp_gen[GPU2D.Num])\n    {\n        ph_tp_gen[GPU2D.Num] = ph_gen;\n        memset(ph_custom_bg_tex[GPU2D.Num], 0, sizeof(ph_custom_bg_tex[0]));\n        memset(ph_custom_spr_tex[GPU2D.Num], 0, sizeof(ph_custom_spr_tex[0]));\n        layer_pre_dirty = 0xF;\n        SpriteDirty = true;\n        comp_dirty = true;\n    }\n")
+ffcc_patch(gpu2d_gl_src GPU2D_OpenGL.cpp "    if (vtxnum == 0) return;\n\n    glUseProgram(SpritePreShader);\n"
+  "    memset(ph_custom_spr_tex[GPU2D.Num], 0, sizeof(ph_custom_spr_tex[0]));\n    if (vtxnum == 0) return;\n\n    glUseProgram(SpritePreShader);\n")
+ffcc_patch(gpu2d_gl_src GPU2D_OpenGL.cpp "    glBindVertexArray(SpritePreVtxArray);\n    glDrawArrays(GL_TRIANGLES, 0, vtxnum);\n}\n"
+  "    glBindVertexArray(SpritePreVtxArray);\n    glDrawArrays(GL_TRIANGLES, 0, vtxnum);\n\n    memset(ph_custom_spr_tex[GPU2D.Num], 0, sizeof(ph_custom_spr_tex[0]));\n    if (ntr_texpack_obj_active())\n    {\n        u8* objvram = nullptr; u32 objmask = 0;\n        GPU2D.GetOBJVRAM(objvram, objmask);\n        uint32_t sprbuf[64 * 64];\n        for (int i = 0; i < NumSprites; i++)\n        {\n            const auto& sp = SpriteConfig.uOAM[i];\n            if (sp.Type >= 3 || sp.OBJMode == 2) continue;\n            if (!ph_decode_oam_sprite(sp, objvram, objmask, TempPalBuffer, sprbuf)) continue;\n            const uint64_t h = ntr_texpack_hash(sprbuf, uint32_t(sp.Size[0] * sp.Size[1] * 4));\n            if (ntr_texpack_dump_active()) ntr_texpack_dump_obj(h, uint32_t(sp.Size[0]), uint32_t(sp.Size[1]), sprbuf);\n            ph_custom_spr_tex[GPU2D.Num][i] = ntr_texpack_get_obj(h);\n        }\n    }\n}\n")
+ffcc_patch(gpu2d_gl_src GPU2D_OpenGL.cpp "    glBindVertexArray(Parent.RectVtxArray);\n    glDrawArrays(GL_TRIANGLES, 0, 2*3);\n}\n"
+  "    glBindVertexArray(Parent.RectVtxArray);\n    glDrawArrays(GL_TRIANGLES, 0, 2*3);\n\n    ph_custom_bg_tex[GPU2D.Num][layer] = 0;\n    if (ntr_texpack_bg_active() && cfg.Size[0] > 0 && cfg.Size[1] > 0)\n    {\n        const uint32_t bw = cfg.Size[0], bh = cfg.Size[1];\n        std::vector<uint32_t> bgbuf(size_t(bw) * size_t(bh));\n        glBindFramebuffer(GL_READ_FRAMEBUFFER, BGLayerFB[layer]);\n        glPixelStorei(GL_PACK_ALIGNMENT, 4);\n        glReadPixels(0, 0, int(bw), int(bh), GL_RGBA, GL_UNSIGNED_BYTE, bgbuf.data());\n        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);\n        bool any_opaque = false;\n        for (uint32_t px : bgbuf) { if ((px & 0xFF000000u) != 0) { any_opaque = true; break; } }\n        if (any_opaque)\n        {\n            const uint64_t h = ntr_texpack_hash(bgbuf.data(), bw * bh * 4u);\n            if (ntr_texpack_dump_active()) ntr_texpack_dump_bg(h, bw, bh, bgbuf.data());\n            ph_custom_bg_tex[GPU2D.Num][layer] = ntr_texpack_get_bg(h);\n        }\n    }\n}\n")
+ffcc_patch(gpu2d_gl_src GPU2D_OpenGL.cpp "    if (SpriteUseMosaic)\n    {\n        glUniform1i(SpriteRenderTransULoc, 1);\n        glColorMaski(1, GL_FALSE, GL_TRUE, GL_FALSE, GL_TRUE);\n\n        RenderSprites(false, ystart, yend);\n    }\n"
+  "    if (SpriteUseMosaic)\n    {\n        glUniform1i(SpriteRenderTransULoc, 1);\n        glColorMaski(1, GL_FALSE, GL_TRUE, GL_FALSE, GL_TRUE);\n\n        ph_tp_render_trans = true;\n        RenderSprites(false, ystart, yend);\n        ph_tp_render_trans = false;\n    }\n")
+ffcc_patch(gpu2d_gl_src GPU2D_OpenGL.cpp "        bool iswin = (sprite.OBJMode == 2);\n        if (iswin != window)\n            continue;\n"
+  "        bool iswin = (sprite.OBJMode == 2);\n        if (iswin != window)\n            continue;\n        if (!window && !ph_tp_render_trans && ph_custom_spr_tex[GPU2D.Num][i] != 0)\n            continue;\n")
+ffcc_patch(gpu2d_gl_src GPU2D_OpenGL.cpp "    if (vtxnum == 0) return;\n\n    glBindBuffer(GL_ARRAY_BUFFER, SpriteVtxBuffer);\n    glBufferSubData(GL_ARRAY_BUFFER, 0, vtxnum * 5 * sizeof(u16), SpriteVtxData);\n\n    glBindVertexArray(SpriteVtxArray);\n    glDrawArrays(GL_TRIANGLES, 0, vtxnum);\n}\n"
+  "    glBindBuffer(GL_ARRAY_BUFFER, SpriteVtxBuffer);\n    glBindVertexArray(SpriteVtxArray);\n    if (vtxnum > 0)\n    {\n        glUniform1i(ph_use_custom_spr_uloc, 0);\n        glBufferSubData(GL_ARRAY_BUFFER, 0, vtxnum * 5 * sizeof(u16), SpriteVtxData);\n        glDrawArrays(GL_TRIANGLES, 0, vtxnum);\n    }\n    if (!window && !ph_tp_render_trans)\n    {\n        for (int i = 0; i < NumSprites; i++)\n        {\n            const GLuint ctex = ph_custom_spr_tex[GPU2D.Num][i];\n            if (!ctex) continue;\n            auto& sprite = SpriteConfig.uOAM[i];\n            if (sprite.OBJMode == 2) continue;\n            s32 xpos = sprite.Position[0], ypos = sprite.Position[1];\n            s32 bw = sprite.BoundSize[0], bh = sprite.BoundSize[1];\n            bool yc0 = ((ypos + bh) > ystart) && (ypos < yend);\n            bool yc1 = (((ypos & 0xFF) + bh) > ystart) && ((ypos & 0xFF) < yend);\n            if (!yc0 && !yc1) continue;\n            u16 cv[5 * 12]; int cn = 0;\n            auto push_quad = [&](s32 y0) {\n                s32 x0 = xpos, x1 = xpos + bw, y1 = y0 + bh;\n                u16* p = cv + cn * 5;\n                *p++ = x0; *p++ = y1; *p++ = 0; *p++ = 1; *p++ = i;\n                *p++ = x1; *p++ = y0; *p++ = 1; *p++ = 0; *p++ = i;\n                *p++ = x1; *p++ = y1; *p++ = 1; *p++ = 1; *p++ = i;\n                *p++ = x0; *p++ = y1; *p++ = 0; *p++ = 1; *p++ = i;\n                *p++ = x0; *p++ = y0; *p++ = 0; *p++ = 0; *p++ = i;\n                *p++ = x1; *p++ = y0; *p++ = 1; *p++ = 0; *p++ = i;\n                cn += 6;\n            };\n            if (yc0) push_quad(ypos);\n            if (yc1) push_quad(ypos & 0xFF);\n            glActiveTexture(GL_TEXTURE3);\n            glBindTexture(GL_TEXTURE_2D, ctex);\n            glUniform1i(ph_use_custom_spr_uloc, 1);\n            glBufferSubData(GL_ARRAY_BUFFER, 0, cn * 5 * sizeof(u16), cv);\n            glDrawArrays(GL_TRIANGLES, 0, cn);\n        }\n        glUniform1i(ph_use_custom_spr_uloc, 0);\n        glActiveTexture(GL_TEXTURE0);\n    }\n}\n")
+ffcc_patch(gpu2d_gl_src GPU2D_OpenGL.cpp "        else\n            glBindTexture(GL_TEXTURE_2D, BGLayerTex[i]);\n"
+  "        else\n            glBindTexture(GL_TEXTURE_2D, ph_custom_bg_tex[GPU2D.Num][i] ? ph_custom_bg_tex[GPU2D.Num][i] : BGLayerTex[i]);\n")
 ffcc_patch(gpu2d_gl_src GPU2D_OpenGL.cpp "        cfg.BGOffset[0][0] = xpos - ((xpos & 0x100) << 1);\n"
   "        cfg.BGOffset[0][0] = xpos - ((xpos & 0x100) << 1) + FfccWideExtra; // ffcc patch\n")
 ffcc_patch(gpu2d_gl_src GPU2D_OpenGL.cpp "            cfg.Size[0] = 256; cfg.Size[1] = 192;\n            cfg.Type = 6;\n"
@@ -195,6 +246,8 @@ ffcc_write_patched(ndscart_src ${CMAKE_CURRENT_BINARY_DIR}/melonds_patched/NDSCa
 # tools/check_gles_compute.py checks them.
 file(READ ${MS}/GPU3D_Compute.cpp gpu3d_compute_src)
 string(REPLACE "\r\n" "\n" gpu3d_compute_src "${gpu3d_compute_src}")
+ffcc_patch(gpu3d_compute_src GPU3D_Compute.cpp "#include \"GPU_OpenGL.h\"\n"
+  "#include \"GPU3D_Texcache_patched.h\"\n#include \"GPU_OpenGL.h\"\n")
 ffcc_patch(gpu3d_compute_src GPU3D_Compute.cpp "namespace melonDS\n{\n\nComputeRenderer3D::ComputeRenderer3D"
   "namespace melonDS\n{\n\nextern int FfccWideExtra; // ph patch\nint FfccComputeOutputWidth = 0; // ph patch: padded width in DS pixels for the 2D compositor's texture coordinates\n\nComputeRenderer3D::ComputeRenderer3D")
 ffcc_patch(gpu3d_compute_src GPU3D_Compute.cpp "    shaderSource += \"#version 430 core\\n\";\n"
@@ -296,6 +349,13 @@ ffcc_patch(shader_2DSpriteVS 2DSpriteVS.glsl "    vec2 fbsize = vec2(256, 192);\
 ffcc_patch(shader_2DSpriteVS 2DSpriteVS.glsl "    gl_Position = vec4(((vec2(vPosition) * 2) / fbsize) - 1, z, 1);\n"
   "    vec4 hud = uHud[vSpriteIndex];\n    vec2 pos = hud.xy + (vec2(vPosition) - hud.xy) * hud.w + vec2(hud.z, 0);\n    gl_Position = vec4((((pos + vec2(uExtra, 0)) * 2) / fbsize) - 1, z, 1);\n")
 ffcc_write_patched(shader_2DSpriteVS ${CMAKE_CURRENT_BINARY_DIR}/melonds_patched/OpenGL_shaders/2DSpriteVS.glsl)
+file(READ ${MS}/OpenGL_shaders/2DSpriteFS.glsl shader_2DSpriteFS)
+string(REPLACE "\r\n" "\n" shader_2DSpriteFS "${shader_2DSpriteFS}")
+ffcc_patch(shader_2DSpriteFS 2DSpriteFS.glsl "uniform sampler2DArray Capture256Tex;\n"
+  "uniform sampler2DArray Capture256Tex;\nuniform sampler2D CustomSpriteTex;\nuniform int uUseCustomSprite;\n")
+ffcc_patch(shader_2DSpriteFS 2DSpriteFS.glsl "        col = GetSpritePixel(fSpriteIndex, coord);\n"
+  "        if (uUseCustomSprite != 0)\n        {\n            col = texture(CustomSpriteTex, coord / vec2(uOAM[fSpriteIndex].Size));\n            if (col.a < 0.5) discard;\n            if (uOAM[fSpriteIndex].OBJMode == 0) col.a = 1.0;\n        }\n        else\n            col = GetSpritePixel(fSpriteIndex, coord);\n")
+ffcc_write_patched(shader_2DSpriteFS ${CMAKE_CURRENT_BINARY_DIR}/melonds_patched/OpenGL_shaders/2DSpriteFS.glsl)
 file(READ ${MS}/OpenGL_shaders/FinalPassFS.glsl shader_FinalPassFS)
 string(REPLACE "\r\n" "\n" shader_FinalPassFS "${shader_FinalPassFS}")
 ffcc_patch(shader_FinalPassFS FinalPassFS.glsl "uniform sampler2DArray AuxInputTex;\n"
@@ -351,7 +411,7 @@ set(melonds_shader_headers)
 foreach(sh ${MELONDS_SHADERS})
   set(out ${CMAKE_CURRENT_BINARY_DIR}/melonds_gen/OpenGL_shaders/${sh}.h)
   set(in ${MS}/OpenGL_shaders/${sh}.glsl)
-  if(sh MATCHES "^(2DCompositorVS|2DCompositorFS|2DSpriteVS|FinalPassFS|CaptureFS|3DRenderVS|3DRenderFS)$")
+  if(sh MATCHES "^(2DCompositorVS|2DCompositorFS|2DSpriteVS|2DSpriteFS|FinalPassFS|CaptureFS|3DRenderVS|3DRenderFS)$")
     set(in ${CMAKE_CURRENT_BINARY_DIR}/melonds_patched/OpenGL_shaders/${sh}.glsl)
   endif()
   if(ANDROID OR PH_GLES_SHADERS)

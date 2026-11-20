@@ -196,6 +196,13 @@ final class PhMenu {
                 refresh();
             }, new boolean[] {true, true, true});
         }
+        if (hardware) {
+            toggle(list, "Custom textures", "Uses HD replacement textures imported from a texture pack (.zip in launcher Settings).",
+                    prefs.getBoolean("custom_textures", false), on -> {
+                        prefs.edit().putBoolean("custom_textures", on).apply();
+                        PhInput.nativeSetCustomTextures(on);
+                    });
+        }
 
         states(list);
 

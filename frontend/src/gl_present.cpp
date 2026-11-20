@@ -5,6 +5,7 @@
 
 #include "font8x8_basic.h"
 #include "frontend/glad/glad.h"  // (melonDS's GL loader, which the runtime's GPU renderer uses too)
+#include "ntr/texpack.hpp"
 #if defined(__ANDROID__) || defined(PH_GLES_TEST)
 #include "gles_compat.hpp"
 #endif
@@ -375,6 +376,7 @@ bool GlPresenter::acquire() {
 bool GlPresenter::recover(std::string& error) {
     // A context lost by Android invalidates all GL names. Abandon those names instead of
     // deleting them in the replacement context, then create a fresh presenter context.
+    ntr::texpack::abandon_gl();
     SDL_GL_MakeCurrent(window_, nullptr);
     context_ = nullptr;
     program_ = vao_ = vbo_ = soft_tex_ = font_tex_ = read_fbo_ = thumb_tex_ = 0;
