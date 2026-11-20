@@ -174,7 +174,7 @@ Place your entry script at `res/main.lua` (or `main.lua`) and access services ei
 - `require("ph.host")` / `ph` — `on`, `off`, `notify`, `fail`, `frame`, `fps`, `dt`, `game_code`, `platform`, `mod`
 - `require("ph.logger")` — `info`, `warn`, `error`, `debug`
 - `require("ph.resource")` — `load(rel)`, `exists(rel)` (from `res/`)
-- `require("ph.config")` — `bool`, `int`, `float`, `choice`, `get`, `set`, `subscribe`, `save`
+- `require("ph.config")` — `bool`, `int`, `float`, `choice`, `hotkey`, `get`, `set`, `subscribe`, `save`
 - `require("ph.mem")` — `u8/s8/u16/s16/u32/s32/f32/q12`, `write_u8/16/32`, `read_bytes`, `write_bytes`, `read_cstr`, `find`
 - `require("ph.hook")` — `resolve`, `symbol_name`, `pre`, `post`, `replace`, `remove`, `call_original`
 - `require("ph.gfx")` — `win_size`, `default_views`, `draw_screen` (crop `src = {x,y,w,h}`, `alpha`, `tint`, `smooth`, `wide`), `fill`, `outline`, `text`, `set_clip`, `clear_clip`, `load_image`, `draw_image`, `to_ds`, `set_touch_rect`, `clear_touch_rects`

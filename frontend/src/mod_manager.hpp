@@ -34,7 +34,7 @@ struct ModTouchRect {
 
 // A mod-defined setting registered via `ph.config.*` or `ConfigService`, exposed in menus and saved to config.json.
 struct ModConfigItem {
-    enum class Kind { Bool, Int, Float, String, Choice };
+    enum class Kind { Bool, Int, Float, String, Choice, Hotkey };
     Kind kind = Kind::Bool;
     std::string key;
     std::string label;
@@ -173,6 +173,7 @@ public:
     bool set_mod_enabled(const std::string& id, bool enabled);
     // Update a mod's registered config item (saves config.json and notifies the running Lua VM).
     bool step_mod_config(const std::string& id, const std::string& key, int dir);
+    bool set_mod_config_string(const std::string& id, const std::string& key, const std::string& value);
 
     const std::filesystem::path& mods_dir() const { return mods_dir_; }
     const std::string& game_code() const { return game_code_; }
