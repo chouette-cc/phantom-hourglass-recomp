@@ -1233,6 +1233,20 @@ struct ModManager::Impl {
             }
         }
         dc.gl->screen_ex(*dc.frame, layer, {dst.x, dst.y, dst.w, dst.h}, u0, v0, u1, v1, smooth, wide, alpha, tint);
+        if (u0 == 0.0f && v0 == 0.0f && u1 == 1.0f && v1 == 1.0f && alpha >= 0.5f) {
+            const bool w_on = wide && dc.wide_extra > 0 && dc.wide_layer == layer;
+            std::array<HudMove, 32> hm{};
+            int hm_cnt = 0;
+            if (w_on) {
+                hm_cnt = std::min(dc.frame->hud_moves, 32);
+                for (int i = 0; i < hm_cnt; i++) {
+                    const auto& m = dc.frame->hud_move[i];
+                    hm[size_t(i)] = {m.x0, m.y0, m.x1, m.y1, m.dx};
+                }
+            }
+            dc.gl->draw_hd_text(layer, {dst.x, dst.y, dst.w, dst.h}, w_on ? dc.wide_extra : 0, w_on ? hm.data() : nullptr,
+                                hm_cnt);
+        }
     }
     static void c_gfx_fill(ModContext* c, PhRect r, uint32_t argb) {
         if (c && c->impl && c->impl->draw_ctx && c->impl->draw_ctx->gl)
@@ -1938,6 +1952,20 @@ struct ModManager::Impl {
             lua_pop(L, 1);
         }
         s->draw_ctx->gl->screen_ex(*s->draw_ctx->frame, layer, {x, y, w, h}, u0, v0, u1, v1, smooth, wide, alpha, tint);
+        if (u0 == 0.0f && v0 == 0.0f && u1 == 1.0f && v1 == 1.0f && alpha >= 0.5f) {
+            const auto& dc = *s->draw_ctx;
+            const bool w_on = wide && dc.wide_extra > 0 && dc.wide_layer == layer;
+            std::array<HudMove, 32> hm{};
+            int hm_cnt = 0;
+            if (w_on) {
+                hm_cnt = std::min(dc.frame->hud_moves, 32);
+                for (int i = 0; i < hm_cnt; i++) {
+                    const auto& m = dc.frame->hud_move[i];
+                    hm[size_t(i)] = {m.x0, m.y0, m.x1, m.y1, m.dx};
+                }
+            }
+            dc.gl->draw_hd_text(layer, {x, y, w, h}, w_on ? dc.wide_extra : 0, w_on ? hm.data() : nullptr, hm_cnt);
+        }
         return 0;
     }
     static int l_gfx_fill(lua_State* L) {

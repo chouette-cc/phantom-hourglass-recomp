@@ -34,6 +34,7 @@
 #include "gl_present.hpp"
 namespace ph {
 void GlPresenter::screen_ex(const ntr::Frame&, int, const Rect&, float, float, float, float, bool, bool, float, uint32_t) {}
+void GlPresenter::draw_hd_text(int, const Rect&, int, const HudMove*, int) {}
 void GlPresenter::fill(const Rect&, uint32_t) {}
 void GlPresenter::outline(const Rect&, float, uint32_t) {}
 void GlPresenter::set_clip(const Rect&) {}
