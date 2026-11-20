@@ -406,6 +406,10 @@ struct Shared {
     std::mutex keys_mutex;
     std::array<uint8_t, SDL_SCANCODE_COUNT> keys_down{};
     std::array<uint8_t, SDL_SCANCODE_COUNT> keys_pressed{};
+    uint32_t pad_down = 0;
+    uint32_t pad_pressed = 0;
+    uint32_t mouse_down = 0;
+    uint32_t mouse_pressed = 0;
     // Widescreen as drawn: the extra pixels each side of the wide screen (0: none), and its layer (0 top, 1 bottom).
     std::atomic<int> wide_extra{0}, wide_layer{1};
     std::mutex hud_mutex;  // the HUD clusters moved to the edges in the frame shown (ph::to_ds)
@@ -429,16 +433,20 @@ struct Shared {
     int menu_selected = 0;
     int menu_page = 0;
     int menu_selected_mod = 0;
+    bool menu_capturing_hotkey = false;
+    std::string menu_capture_mod_id;
+    std::string menu_capture_cfg_key;
     int menu_ach_filter = 0;
     int menu_ach_scroll = 0;
     bool menu_ach_reset_confirm = false;
     bool video_dirty = false;
     std::atomic<int> mod_layout_request{-1};
     struct ModAction {
-        enum class Kind { Reload, Toggle, StepConfig };
+        enum class Kind { Reload, Toggle, StepConfig, SetConfigString };
         Kind kind = Kind::Reload;
         std::string mod_id;
         std::string cfg_key;
+        std::string cfg_str;
         bool enable = false;
         int dir = 0;
     };
@@ -542,7 +550,7 @@ public:
                 std::lock_guard<std::mutex> lock(s_.mod_action_mutex);
                 acts.swap(s_.mod_actions);
             }
-            if (ph::pad::reload_mods.exchange(false)) acts.push_back(Shared::ModAction{Shared::ModAction::Kind::Reload, {}, {}, false, 0});
+            if (ph::pad::reload_mods.exchange(false)) acts.push_back(Shared::ModAction{Shared::ModAction::Kind::Reload, {}, {}, {}, false, 0});
             bool want_reload = false;
             for (const auto& a : acts) {
                 if (a.kind == Shared::ModAction::Kind::Toggle) {
@@ -550,6 +558,8 @@ public:
                     want_reload = true;
                 } else if (a.kind == Shared::ModAction::Kind::StepConfig) {
                     mods_->step_mod_config(a.mod_id, a.cfg_key, a.dir);
+                } else if (a.kind == Shared::ModAction::Kind::SetConfigString) {
+                    mods_->set_mod_config_string(a.mod_id, a.cfg_key, a.cfg_str);
                 } else if (a.kind == Shared::ModAction::Kind::Reload) {
                     want_reload = true;
                 }
@@ -637,6 +647,8 @@ public:
         {
             std::lock_guard<std::mutex> lock(s_.keys_mutex);
             s_.keys_pressed.fill(0);
+            s_.pad_pressed = 0;
+            s_.mouse_pressed = 0;
         }
         bool quit = false;
         for (const ScriptStep& st : script_) {
@@ -815,8 +827,9 @@ private:
     // Shows the frame (and the FPS counter, a note, the PC's menu) and applies a renderer change asked for in the menu.
     void draw(const ntr::Frame& frame, bool count_game_frame = true, const std::string& window_shot_path = {}) {
         Settings view;
-        bool menu_open, video_dirty, ach_reset_confirm = false;
+        bool menu_open, video_dirty, ach_reset_confirm = false, capturing_hotkey = false;
         int selected, page, selected_mod, ach_filter = 0, ach_scroll = 0;
+        std::string capture_mod_id, capture_cfg_key;
         {
             std::lock_guard<std::mutex> lock(s_.view_mutex);
             view = s_.view;
@@ -824,10 +837,14 @@ private:
             selected = s_.menu_selected;
             page = s_.menu_page;
             selected_mod = s_.menu_selected_mod;
+            capturing_hotkey = s_.menu_capturing_hotkey;
+            capture_mod_id = s_.menu_capture_mod_id;
+            capture_cfg_key = s_.menu_capture_cfg_key;
             ach_filter = s_.menu_ach_filter;
             ach_scroll = s_.menu_ach_scroll;
             ach_reset_confirm = s_.menu_ach_reset_confirm;
             (void)selected, (void)page, (void)selected_mod, (void)ach_filter, (void)ach_scroll, (void)ach_reset_confirm;
+            (void)capturing_hotkey, (void)capture_mod_id, (void)capture_cfg_key;
             video_dirty = s_.video_dirty;
             s_.video_dirty = false;
         }
@@ -952,6 +969,9 @@ private:
             menu.page = page;
             menu.selected = selected;
             menu.selected_mod = selected_mod;
+            menu.capturing_hotkey = capturing_hotkey;
+            menu.capture_mod_id = capture_mod_id;
+            menu.capture_cfg_key = capture_cfg_key;
             menu.ach_filter = ach_filter;
             menu.ach_scroll = ach_scroll;
             menu.ach_reset_confirm = ach_reset_confirm;
@@ -1143,6 +1163,62 @@ uint32_t pad_button_bit(int button) {
         case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return ntr::KeyRight;
         default: return 0;
     }
+}
+
+std::string gamepad_binding_name(int button) {
+    switch (button) {
+        case SDL_GAMEPAD_BUTTON_EAST: return "Pad:A";
+        case SDL_GAMEPAD_BUTTON_SOUTH: return "Pad:B";
+        case SDL_GAMEPAD_BUTTON_NORTH: return "Pad:X";
+        case SDL_GAMEPAD_BUTTON_WEST: return "Pad:Y";
+        case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: return "Pad:LB";
+        case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return "Pad:RB";
+        case SDL_GAMEPAD_BUTTON_START: return "Pad:Start";
+        case SDL_GAMEPAD_BUTTON_BACK: return "Pad:Select";
+        case SDL_GAMEPAD_BUTTON_LEFT_STICK: return "Pad:L3";
+        case SDL_GAMEPAD_BUTTON_RIGHT_STICK: return "Pad:R3";
+        case SDL_GAMEPAD_BUTTON_DPAD_UP: return "Pad:Up";
+        case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return "Pad:Down";
+        case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return "Pad:Left";
+        case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return "Pad:Right";
+        default: return {};
+    }
+}
+
+int gamepad_button_from_binding(const std::string& name) {
+    if (name == "Pad:A") return SDL_GAMEPAD_BUTTON_EAST;
+    if (name == "Pad:B") return SDL_GAMEPAD_BUTTON_SOUTH;
+    if (name == "Pad:X") return SDL_GAMEPAD_BUTTON_NORTH;
+    if (name == "Pad:Y") return SDL_GAMEPAD_BUTTON_WEST;
+    if (name == "Pad:LB" || name == "Pad:L") return SDL_GAMEPAD_BUTTON_LEFT_SHOULDER;
+    if (name == "Pad:RB" || name == "Pad:R") return SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER;
+    if (name == "Pad:Start") return SDL_GAMEPAD_BUTTON_START;
+    if (name == "Pad:Select" || name == "Pad:Back") return SDL_GAMEPAD_BUTTON_BACK;
+    if (name == "Pad:L3") return SDL_GAMEPAD_BUTTON_LEFT_STICK;
+    if (name == "Pad:R3") return SDL_GAMEPAD_BUTTON_RIGHT_STICK;
+    if (name == "Pad:Up") return SDL_GAMEPAD_BUTTON_DPAD_UP;
+    if (name == "Pad:Down") return SDL_GAMEPAD_BUTTON_DPAD_DOWN;
+    if (name == "Pad:Left") return SDL_GAMEPAD_BUTTON_DPAD_LEFT;
+    if (name == "Pad:Right") return SDL_GAMEPAD_BUTTON_DPAD_RIGHT;
+    return -1;
+}
+
+std::string mouse_binding_name(uint8_t button) {
+    switch (button) {
+        case SDL_BUTTON_RIGHT: return "Mouse:Right";
+        case SDL_BUTTON_MIDDLE: return "Mouse:Middle";
+        case SDL_BUTTON_X1: return "Mouse:X1";
+        case SDL_BUTTON_X2: return "Mouse:X2";
+        default: return {};
+    }
+}
+
+uint32_t mouse_mask_from_binding(const std::string& name) {
+    if (name == "Mouse:Right") return SDL_BUTTON_RMASK;
+    if (name == "Mouse:Middle") return SDL_BUTTON_MMASK;
+    if (name == "Mouse:X1") return SDL_BUTTON_X1MASK;
+    if (name == "Mouse:X2") return SDL_BUTTON_X2MASK;
+    return 0;
 }
 
 // `stick`: the left stick is the analog stick (ph_stick.hpp), not the D-pad.
@@ -1365,12 +1441,40 @@ int main(int argc, char** argv) {
         mcb.set_mic_sample = [&](bool on) { ntr::set_mic_sample(on); };
         mcb.set_lid_closed = [&](bool closed) { ntr::set_lid_closed(closed); };
         mcb.is_key_down = [&](const std::string& key_name) -> bool {
+            if (key_name.empty() || key_name == "None") return false;
+            if (key_name.rfind("Pad:", 0) == 0) {
+                const int btn = gamepad_button_from_binding(key_name);
+                if (btn < 0 || btn >= 32) return false;
+                const uint32_t ds_bit = pad_button_bit(btn);
+                if (ds_bit && (ph::pad::held.load() & ds_bit)) return true;
+                std::lock_guard<std::mutex> lock(shared.keys_mutex);
+                return (shared.pad_down & (1u << btn)) != 0;
+            }
+            if (key_name.rfind("Mouse:", 0) == 0) {
+                const uint32_t mask = mouse_mask_from_binding(key_name);
+                if (!mask) return false;
+                std::lock_guard<std::mutex> lock(shared.keys_mutex);
+                return (shared.mouse_down & mask) != 0;
+            }
             const SDL_Scancode sc = SDL_GetScancodeFromName(key_name.c_str());
             if (sc <= SDL_SCANCODE_UNKNOWN || sc >= SDL_SCANCODE_COUNT) return false;
             std::lock_guard<std::mutex> lock(shared.keys_mutex);
             return shared.keys_down[size_t(sc)] != 0;
         };
         mcb.was_key_pressed = [&](const std::string& key_name) -> bool {
+            if (key_name.empty() || key_name == "None") return false;
+            if (key_name.rfind("Pad:", 0) == 0) {
+                const int btn = gamepad_button_from_binding(key_name);
+                if (btn < 0 || btn >= 32) return false;
+                std::lock_guard<std::mutex> lock(shared.keys_mutex);
+                return (shared.pad_pressed & (1u << btn)) != 0;
+            }
+            if (key_name.rfind("Mouse:", 0) == 0) {
+                const uint32_t mask = mouse_mask_from_binding(key_name);
+                if (!mask) return false;
+                std::lock_guard<std::mutex> lock(shared.keys_mutex);
+                return (shared.mouse_pressed & mask) != 0;
+            }
             const SDL_Scancode sc = SDL_GetScancodeFromName(key_name.c_str());
             if (sc <= SDL_SCANCODE_UNKNOWN || sc >= SDL_SCANCODE_COUNT) return false;
             std::lock_guard<std::mutex> lock(shared.keys_mutex);
@@ -1478,6 +1582,9 @@ int main(int argc, char** argv) {
         shared.menu_selected = menu.selected;
         shared.menu_page = menu.page;
         shared.menu_selected_mod = menu.selected_mod;
+        shared.menu_capturing_hotkey = menu.capturing_hotkey;
+        shared.menu_capture_mod_id = menu.capture_mod_id;
+        shared.menu_capture_cfg_key = menu.capture_cfg_key;
         shared.menu_ach_filter = menu.ach_filter;
         shared.menu_ach_scroll = menu.ach_scroll;
         shared.menu_ach_reset_confirm = menu.ach_reset_confirm;
@@ -1518,11 +1625,13 @@ int main(int argc, char** argv) {
         const bool lang_changed = ms.language != settings.language;
         if (r == ph::MenuResult::Quit) request_quit();
         if (r == ph::MenuResult::ToggleMod && mods_enabled)
-            shared.push_mod_action({Shared::ModAction::Kind::Toggle, ms.action_mod_id, {}, ms.action_mod_enable, 0});
+            shared.push_mod_action({Shared::ModAction::Kind::Toggle, ms.action_mod_id, {}, {}, ms.action_mod_enable, 0});
         if (r == ph::MenuResult::StepModConfig && mods_enabled)
-            shared.push_mod_action({Shared::ModAction::Kind::StepConfig, ms.action_mod_id, ms.action_cfg_key, false, ms.action_cfg_dir});
+            shared.push_mod_action({Shared::ModAction::Kind::StepConfig, ms.action_mod_id, ms.action_cfg_key, {}, false, ms.action_cfg_dir});
+        if (r == ph::MenuResult::SetModConfigString && mods_enabled)
+            shared.push_mod_action({Shared::ModAction::Kind::SetConfigString, ms.action_mod_id, ms.action_cfg_key, ms.action_cfg_str, false, 0});
         if (r == ph::MenuResult::ReloadMods && mods_enabled)
-            shared.push_mod_action(Shared::ModAction{Shared::ModAction::Kind::Reload, {}, {}, false, 0});
+            shared.push_mod_action(Shared::ModAction{Shared::ModAction::Kind::Reload, {}, {}, {}, false, 0});
         settings.layout = ms.layout, settings.gpu = ms.gpu, settings.scale = ms.scale;
         settings.smooth = ms.smooth, settings.fps = ms.fps, settings.slot = ms.slot;
         settings.fps_corner = ms.fps_corner, settings.stretch = ms.stretch;
@@ -1610,14 +1719,43 @@ int main(int argc, char** argv) {
                 case SDL_EVENT_GAMEPAD_REMOVED:
                     if (pad && SDL_GetGamepadID(pad) == e.gdevice.which) SDL_CloseGamepad(pad), pad = nullptr;
                     break;
-                case SDL_EVENT_GAMEPAD_BUTTON_DOWN: shared.pressed |= pad_button_bit(e.gbutton.button); break;
+                case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+#ifndef __ANDROID__
+                    if (!testing && menu.open && menu.capturing_hotkey) {
+                        const std::string bind = gamepad_binding_name(e.gbutton.button);
+                        if (!bind.empty()) {
+                            ph::MenuState ms = menu_state();
+                            menu_done(ms, menu.capture_binding(bind, ms));
+                        }
+                        break;
+                    }
+#endif
+                    if (e.gbutton.button >= 0 && e.gbutton.button < 32) {
+                        std::lock_guard<std::mutex> lock(shared.keys_mutex);
+                        shared.pad_pressed |= (1u << e.gbutton.button);
+                    }
+                    shared.pressed |= pad_button_bit(e.gbutton.button);
+                    break;
 #ifndef __ANDROID__
                 case SDL_EVENT_MOUSE_BUTTON_DOWN:
                     if (testing) break;  // (a test run's input is its script's alone)
-                    if (menu.open && e.button.button == SDL_BUTTON_LEFT) {
-                        ph::MenuState ms = menu_state();
-                        menu_done(ms, menu.click(e.button.x * density, e.button.y * density, float(win_pw), float(win_ph),
-                                                 ui, ms));
+                    if (menu.open) {
+                        if (menu.capturing_hotkey && e.button.button != SDL_BUTTON_LEFT) {
+                            const std::string bind = mouse_binding_name(e.button.button);
+                            if (!bind.empty()) {
+                                ph::MenuState ms = menu_state();
+                                menu_done(ms, menu.capture_binding(bind, ms));
+                            }
+                            break;
+                        }
+                        if (e.button.button == SDL_BUTTON_LEFT) {
+                            ph::MenuState ms = menu_state();
+                            menu_done(ms, menu.click(e.button.x * density, e.button.y * density, float(win_pw), float(win_ph),
+                                                     ui, ms));
+                        }
+                    } else {
+                        std::lock_guard<std::mutex> lock(shared.keys_mutex);
+                        shared.mouse_pressed |= SDL_BUTTON_MASK(e.button.button);
                     }
                     break;
                 case SDL_EVENT_MOUSE_WHEEL:
@@ -1661,7 +1799,7 @@ int main(int argc, char** argv) {
                         settings.fps = !settings.fps;
                         ph::pad::fps = settings.fps;
                     } else if (k == SDL_SCANCODE_F6 && mods_enabled) {  // hot-reload mods
-                        shared.push_mod_action(Shared::ModAction{Shared::ModAction::Kind::Reload, {}, {}, false, 0});
+                        shared.push_mod_action(Shared::ModAction{Shared::ModAction::Kind::Reload, {}, {}, {}, false, 0});
                     } else if (k == SDL_SCANCODE_F12) {  // screenshot of both screens
                         shared.shot_request = true;
                     } else if (k == SDL_SCANCODE_F5) {  // save state, to the slot chosen in the menu
@@ -1680,9 +1818,15 @@ int main(int argc, char** argv) {
 
         // Buttons held (the keyboard's only while the menu is closed), fast-forward on the ` key.
         const bool* keys = SDL_GetKeyboardState(nullptr);
+        uint32_t cur_pad_down = 0;
+        if (pad && !menu_open) {
+            for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT && b < 32; b++)
+                if (SDL_GetGamepadButton(pad, SDL_GamepadButton(b))) cur_pad_down |= (1u << b);
+        }
         {
             std::lock_guard<std::mutex> lock(shared.keys_mutex);
             for (int sc = 0; sc < SDL_SCANCODE_COUNT; sc++) shared.keys_down[size_t(sc)] = (!menu_open && keys[sc]) ? 1 : 0;
+            shared.pad_down = cur_pad_down;
         }
         shared.held = (menu_open ? 0u : keyboard_buttons()) | gamepad_buttons(pad, settings.stick) | ph::pad::held.load();
         // The analog stick: the gamepad's left stick or the phone's on-screen one, whichever is pushed farther.
@@ -1755,6 +1899,10 @@ int main(int argc, char** argv) {
         float mx = 0, my = 0;
         const SDL_MouseButtonFlags mb = SDL_GetMouseState(&mx, &my);
         const bool focused = SDL_GetMouseFocus() == window;
+        {
+            std::lock_guard<std::mutex> lock(shared.keys_mutex);
+            shared.mouse_down = (!menu_open && focused) ? uint32_t(mb) : 0u;
+        }
         bool down = !menu_open && (mb & SDL_BUTTON_LMASK) && focused;
         const bool rdown = !menu_open && (mb & SDL_BUTTON_RMASK) && focused;
         mx *= density, my *= density;  // (window coordinates to pixels)

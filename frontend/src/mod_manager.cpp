@@ -782,7 +782,11 @@ struct ModManager::Impl {
             case ModConfigItem::Kind::Bool: v.type = CONFIG_VAR_BOOL; v.bool_value = it.bool_val; break;
             case ModConfigItem::Kind::Int: v.type = CONFIG_VAR_INT; v.int_value = it.int_val; break;
             case ModConfigItem::Kind::Float: v.type = CONFIG_VAR_FLOAT; v.float_value = it.float_val; break;
-            case ModConfigItem::Kind::String: v.type = CONFIG_VAR_STRING; v.string_value = it.string_val.c_str(); break;
+            case ModConfigItem::Kind::String:
+            case ModConfigItem::Kind::Hotkey:
+                v.type = CONFIG_VAR_STRING;
+                v.string_value = it.string_val.c_str();
+                break;
             case ModConfigItem::Kind::Choice:
                 v.type = CONFIG_VAR_CHOICE;
                 v.int_value = it.int_val;
@@ -2171,6 +2175,18 @@ struct ModManager::Impl {
         lua_pushstring(L, choices[size_t(cur_0)].c_str());
         return 2;
     }
+    static int l_cfg_hotkey(lua_State* L) {
+        Impl* s = get_impl(L); LoadedMod* m = get_mod(L);
+        const std::string key = luaL_checkstring(L, 1), label = luaL_checkstring(L, 2);
+        const std::string def = luaL_optstring(L, 3, "None");
+        const std::string cur = m->config_json.string_or(key, def);
+        m->config_json.obj[key] = json::Value::make_string(cur);
+        auto* it = find_or_add_cfg(m, key);
+        it->kind = ModConfigItem::Kind::Hotkey; it->label = label; it->string_val = cur;
+        s->publish_snapshots();
+        lua_pushlstring(L, cur.data(), cur.size());
+        return 1;
+    }
     static int l_cfg_get(lua_State* L) {
         LoadedMod* m = get_mod(L);
         if (const json::Value* v = m->config_json.get(luaL_checkstring(L, 1))) { push_json_to_lua(L, *v); return 1; }
@@ -2192,7 +2208,8 @@ struct ModManager::Impl {
                 item.int_val = std::clamp<int64_t>(int64_t(std::llround(val.number)), int64_t(item.min_val), int64_t(item.max_val));
             else if (item.kind == ModConfigItem::Kind::Float && val.is_number())
                 item.float_val = std::clamp(val.number, item.min_val, item.max_val);
-            else if (item.kind == ModConfigItem::Kind::String && val.is_string()) item.string_val = val.str;
+            else if ((item.kind == ModConfigItem::Kind::String || item.kind == ModConfigItem::Kind::Hotkey) && val.is_string())
+                item.string_val = val.str;
             else if (item.kind == ModConfigItem::Kind::Choice) {
                 if (val.is_string()) { for (size_t j = 0; j < item.choices.size(); j++) if (item.choices[j] == val.str) item.int_val = int64_t(j); }
                 else if (val.is_number() && !item.choices.empty()) item.int_val = std::clamp<int64_t>(int64_t(val.number) - 1, 0, int64_t(item.choices.size()) - 1);
@@ -2516,8 +2533,8 @@ struct ModManager::Impl {
 
         static const luaL_Reg kCfgLib[] = {
             {"bool", l_cfg_bool}, {"int", l_cfg_int}, {"float", l_cfg_float}, {"choice", l_cfg_choice},
-            {"get", l_cfg_get}, {"set", l_cfg_set}, {"subscribe", l_cfg_subscribe}, {"save", l_cfg_save},
-            {nullptr, nullptr},
+            {"hotkey", l_cfg_hotkey}, {"get", l_cfg_get}, {"set", l_cfg_set}, {"subscribe", l_cfg_subscribe},
+            {"save", l_cfg_save}, {nullptr, nullptr},
         };
         luaL_newlib(L, kCfgLib); lua_setfield(L, -2, "config");
 
@@ -3406,8 +3423,29 @@ bool ModManager::step_mod_config(const std::string& id, const std::string& key, 
                     }
                     break;
                 case ModConfigItem::Kind::String:
+                case ModConfigItem::Kind::Hotkey:
                     return false;
             }
+            impl_->save_mod_config(*m);
+            impl_->notify_config_change(*m, i, prev, Impl::item_to_value(item));
+            impl_->publish_snapshots();
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ModManager::set_mod_config_string(const std::string& id, const std::string& key, const std::string& value) {
+    for (auto& m : impl_->mods) {
+        if (m->id != id) continue;
+        for (size_t i = 0; i < m->config_items.size(); i++) {
+            ModConfigItem& item = m->config_items[i];
+            if (item.key != key) continue;
+            if (item.kind != ModConfigItem::Kind::String && item.kind != ModConfigItem::Kind::Hotkey) return false;
+            const std::string prev_str = item.string_val;
+            ConfigVarValue prev{CONFIG_VAR_STRING, false, 0, 0.0, prev_str.c_str()};
+            item.string_val = value;
+            m->config_json.obj[key] = json::Value::make_string(value);
             impl_->save_mod_config(*m);
             impl_->notify_config_change(*m, i, prev, Impl::item_to_value(item));
             impl_->publish_snapshots();

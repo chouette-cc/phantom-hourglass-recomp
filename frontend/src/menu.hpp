@@ -48,13 +48,14 @@ struct MenuState {
     int selected_mod = 0;
     std::string action_mod_id;
     std::string action_cfg_key;
+    std::string action_cfg_str;
     int action_cfg_dir = 0;
     bool action_mod_enable = false;
     // Achievements page:
     AchievementsSnapshot achievements{};
 };
 
-enum class MenuResult { None, Changed, Quit, SaveState, LoadState, Continue, ToggleMod, StepModConfig, ReloadMods, ResetAchievements };
+enum class MenuResult { None, Changed, Quit, SaveState, LoadState, Continue, ToggleMod, StepModConfig, SetModConfigString, ReloadMods, ResetAchievements };
 
 class Menu {
 public:
@@ -62,11 +63,16 @@ public:
     int page = 0;  // 0 Settings, 1 Save states, 2 Mods, 3 Achievements
     int selected = 0;
     int selected_mod = 0;
+    bool capturing_hotkey = false;
+    std::string capture_mod_id;
+    std::string capture_cfg_key;
     int ach_filter = 0;  // 0 All, 1 Unlocked, 2 Locked
     int ach_scroll = 0;
     bool ach_reset_confirm = false;
 
     MenuResult key(SDL_Scancode key, MenuState& s);
+    // Assigns a captured binding string (e.g. "V", "Pad:LB", "Mouse:Right", "None") while capturing_hotkey is active.
+    MenuResult capture_binding(const std::string& binding, MenuState& s);
     // A click at window pixel (x, y); a click beside the panel closes it.
     MenuResult click(float x, float y, float win_w, float win_h, float ui, MenuState& s);
     // Mouse wheel scroll (positive y = scroll up).
@@ -97,6 +103,7 @@ private:
     };
     struct ModCfgGeom {
         std::string key;
+        ModConfigItem::Kind kind = ModConfigItem::Kind::Bool;
         Rect label_rect;
         Rect minus_rect;
         Rect value_rect;

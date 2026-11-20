@@ -157,8 +157,9 @@ Menu::Geometry Menu::geometry(const MenuState& s, float win_w, float win_h, floa
             const float cx = p.x + pad + lbl_w + gap;
             ModCfgGeom cg;
             cg.key = cfg.key;
+            cg.kind = cfg.kind;
             cg.label_rect = {p.x + pad, my, lbl_w, row_h};
-            if (cfg.kind == ModConfigItem::Kind::Bool) {
+            if (cfg.kind == ModConfigItem::Kind::Bool || cfg.kind == ModConfigItem::Kind::Hotkey) {
                 cg.value_rect = {cx, my, ctrl_w, row_h};
             } else {
                 cg.minus_rect = {cx, my, btn_w, row_h};
@@ -236,7 +237,32 @@ MenuResult Menu::choose(int row, int choice, MenuState& s) {
     return MenuResult::Changed;
 }
 
+MenuResult Menu::capture_binding(const std::string& binding, MenuState& s) {
+    if (!capturing_hotkey) return MenuResult::None;
+    s.action_mod_id = capture_mod_id;
+    s.action_cfg_key = capture_cfg_key;
+    s.action_cfg_str = binding.empty() ? "None" : binding;
+    capturing_hotkey = false;
+    capture_mod_id.clear();
+    capture_cfg_key.clear();
+    return MenuResult::SetModConfigString;
+}
+
 MenuResult Menu::key(SDL_Scancode key, MenuState& s) {
+    if (capturing_hotkey) {
+        if (key == SDL_SCANCODE_ESCAPE) {
+            capturing_hotkey = false;
+            capture_mod_id.clear();
+            capture_cfg_key.clear();
+            return MenuResult::None;
+        }
+        if (key == SDL_SCANCODE_BACKSPACE || key == SDL_SCANCODE_DELETE) {
+            return capture_binding("None", s);
+        }
+        const char* name = SDL_GetScancodeName(key);
+        if (name && name[0]) return capture_binding(name, s);
+        return MenuResult::None;
+    }
     if (key == SDL_SCANCODE_ESCAPE || key == SDL_SCANCODE_F1) {
         open = false;
         return MenuResult::None;
@@ -324,19 +350,25 @@ MenuResult Menu::click(float x, float y, float win_w, float win_h, float ui, Men
     const Geometry g = geometry(s, win_w, win_h, ui);
     if (!g.panel.contains(x, y)) {
         open = false;
+        capturing_hotkey = false;
         ach_reset_confirm = false;
         return MenuResult::None;
     }
     for (int t = 0; t < 4; t++)
         if (g.tabs[size_t(t)].contains(x, y)) {
             page = t;
+            capturing_hotkey = false;
             ach_reset_confirm = false;
             return MenuResult::None;
         }
     if (page == 2) {
-        if (g.mod_reload_btn.contains(x, y)) return MenuResult::ReloadMods;
+        if (g.mod_reload_btn.contains(x, y)) {
+            capturing_hotkey = false;
+            return MenuResult::ReloadMods;
+        }
         for (size_t i = 0; i < g.mod_rows.size() && i < s.mods.size(); i++) {
             if (g.mod_rows[i].toggle_rect.contains(x, y)) {
+                capturing_hotkey = false;
                 selected_mod = int(i);
                 s.selected_mod = selected_mod;
                 s.action_mod_id = s.mods[i].id;
@@ -344,6 +376,7 @@ MenuResult Menu::click(float x, float y, float win_w, float win_h, float ui, Men
                 return MenuResult::ToggleMod;
             }
             if (g.mod_rows[i].select_rect.contains(x, y)) {
+                capturing_hotkey = false;
                 selected_mod = int(i);
                 s.selected_mod = selected_mod;
                 return MenuResult::None;
@@ -353,7 +386,20 @@ MenuResult Menu::click(float x, float y, float win_w, float win_h, float ui, Men
             const int idx = std::clamp(selected_mod, 0, int(s.mods.size()) - 1);
             const ModSummary& m = s.mods[size_t(idx)];
             for (const ModCfgGeom& cg : g.mod_cfgs) {
+                if (cg.kind == ModConfigItem::Kind::Hotkey && cg.value_rect.contains(x, y)) {
+                    if (capturing_hotkey && capture_mod_id == m.id && capture_cfg_key == cg.key) {
+                        capturing_hotkey = false;
+                        capture_mod_id.clear();
+                        capture_cfg_key.clear();
+                    } else {
+                        capturing_hotkey = true;
+                        capture_mod_id = m.id;
+                        capture_cfg_key = cg.key;
+                    }
+                    return MenuResult::None;
+                }
                 if (cg.minus_rect.w > 0 && cg.minus_rect.contains(x, y)) {
+                    capturing_hotkey = false;
                     s.action_mod_id = m.id;
                     s.action_cfg_key = cg.key;
                     s.action_cfg_dir = -1;
@@ -361,6 +407,7 @@ MenuResult Menu::click(float x, float y, float win_w, float win_h, float ui, Men
                 }
                 if ((cg.plus_rect.w > 0 && cg.plus_rect.contains(x, y)) ||
                     (cg.minus_rect.w <= 0 && cg.value_rect.contains(x, y))) {
+                    capturing_hotkey = false;
                     s.action_mod_id = m.id;
                     s.action_cfg_key = cg.key;
                     s.action_cfg_dir = 1;
@@ -368,6 +415,7 @@ MenuResult Menu::click(float x, float y, float win_w, float win_h, float ui, Men
                 }
             }
         }
+        capturing_hotkey = false;
         return MenuResult::None;
     }
     if (page == 3) {
@@ -486,6 +534,19 @@ void Menu::draw_panel(GlPresenter& gl, const MenuState& s, float win_w, float wi
                 gl.text(cg.label_rect.x, cg.label_rect.y + (cg.label_rect.h - lsz) / 2, lsz, ci.label, kWhite);
                 if (ci.kind == ModConfigItem::Kind::Bool) {
                     chip(gl, cg.value_rect, ci.bool_val ? "On" : "Off", ci.bool_val, true, text * 0.9f, ui);
+                } else if (ci.kind == ModConfigItem::Kind::Hotkey) {
+                    const bool is_cap = capturing_hotkey && capture_mod_id == cur.id && capture_cfg_key == ci.key;
+                    if (is_cap) {
+                        gl.fill(cg.value_rect, kGold);
+                        const std::string lbl = "Press key...";
+                        const float sz = std::min(text * 0.85f, (cg.value_rect.w - 8 * ui) / float(lbl.size()));
+                        gl.text(cg.value_rect.x + (cg.value_rect.w - sz * float(lbl.size())) / 2,
+                                cg.value_rect.y + (cg.value_rect.h - sz) / 2, sz, lbl, 0xFF000000);
+                    } else {
+                        const std::string disp = ci.string_val.empty() ? "None" : ci.string_val;
+                        const bool bound = disp != "None";
+                        chip(gl, cg.value_rect, disp, bound, true, text * 0.85f, ui);
+                    }
                 } else {
                     std::string val;
                     if (ci.kind == ModConfigItem::Kind::Int) val = std::to_string(ci.int_val);
@@ -503,7 +564,10 @@ void Menu::draw_panel(GlPresenter& gl, const MenuState& s, float win_w, float wi
             }
         }
         chip(gl, g.mod_reload_btn, "Reload mods (F6)", false, true, text, ui);
-        gl.text(p.x + pad, win_h - pad - small, small, "Up/Down: select. Enter: toggle. R/F6: reload. Tab: page.", kHint);
+        const char* mod_hint = capturing_hotkey
+                                   ? "Press key, pad or mouse button. Backspace: clear. Esc: cancel."
+                                   : "Up/Down: select. Enter: toggle. R/F6: reload. Tab: page.";
+        gl.text(p.x + pad, win_h - pad - small, small, mod_hint, capturing_hotkey ? kGold : kHint);
         return;
     }
 
