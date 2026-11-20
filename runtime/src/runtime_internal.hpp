@@ -74,7 +74,26 @@ public:
     unsigned render_between(double x) override;
     void request_save_state() override;
     void request_load_state(std::vector<uint8_t> state) override;
+    uint8_t peek8(uint32_t address) const override;
+    uint16_t peek16(uint32_t address) const override;
     uint32_t peek32(uint32_t address) const override;
+    bool poke8(uint32_t address, uint8_t value) override;
+    bool poke16(uint32_t address, uint16_t value) override;
+    bool poke32(uint32_t address, uint32_t value) override;
+    size_t read_mem(uint32_t address, uint8_t* out, size_t size) const override;
+    size_t write_mem(uint32_t address, const uint8_t* data, size_t size) override;
+    size_t read_rom(uint32_t offset, uint8_t* out, size_t size) const override;
+    DisplayInfo display_info() const override;
+    uint32_t resolve_symbol(const char* name) const override;
+    const char* symbol_name(uint32_t addr) const override;
+    uint64_t add_function_hook(uint32_t addr, HookKind kind, FunctionHookCallback cb, void* userdata,
+                               int priority = 0) override;
+    bool remove_function_hook(uint64_t handle) override;
+    void clear_function_hooks() override;
+    bool call_hook_original(uint64_t handle, NtrCpu* cpu) override;
+    bool call_guest_function(uint32_t addr, uint32_t r0, uint32_t r1, uint32_t r2, uint32_t r3,
+                             uint32_t* out_r0 = nullptr) override;
+    int hook_dispatch(uint32_t addr, NtrFunc orig);
 
     // ---- save states (savestate.cpp) ----
     bool save_requested() const { return save_requested_; }
@@ -176,9 +195,34 @@ private:
 
     std::vector<uint8_t*> read_pages_, write_pages_;
     std::unordered_map<u32, std::vector<const NtrFuncEntry*>> functions_;
+    std::unordered_map<std::string, u32> symbols_by_name_;
+    std::unordered_map<u32, const char*> symbol_names_;
     std::vector<const NtrOverlayInfo*> overlays_by_id_;
     std::vector<const NtrOverlayInfo*> interpreted_;
     std::unordered_map<u32, const NtrFuncEntry*> call_cache_;
+
+    // Dynamic mod function hooks + 4 KiB bloom filter pointed to by cpu.hook_bloom.
+    struct InstalledHook {
+        uint64_t handle = 0;
+        u32 addr = 0;  // aligned (bit 0 stripped)
+        HookKind kind = HookKind::Pre;
+        FunctionHookCallback cb = nullptr;
+        void* userdata = nullptr;
+        int priority = 0;
+    };
+    struct ActiveOrigFrame {
+        uint64_t handle = 0;
+        u32 addr = 0;
+        u32 fiber = 0;
+        NtrFunc orig = nullptr;
+    };
+    void rebuild_hook_bloom();
+    uint64_t next_hook_handle_ = 1;
+    std::vector<InstalledHook> hooks_;
+    std::unordered_map<u32, std::vector<InstalledHook>> hooks_by_addr_;
+    std::array<uint8_t, 4096> hook_bloom_{};
+    std::vector<ActiveOrigFrame> active_orig_stack_;
+    std::vector<std::pair<u32, u32>> bypass_orig_stack_;  // (fiber, aligned addr) currently running orig()
 
     // Banked registers for modes other than the current one (melonDS layout: r13, r14, spsr).
     u32 bank_usr_[2] = {};

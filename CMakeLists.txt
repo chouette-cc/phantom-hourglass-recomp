@@ -39,6 +39,7 @@ if(NOT ANDROID)  # (the phone build takes the game's C from a PC build: no recom
   add_subdirectory(tools)
 endif()
 if(FFCC_BUILD_GAME)
+  add_subdirectory(sdk)
   add_subdirectory(third_party)
   add_subdirectory(runtime)
   add_subdirectory(frontend)

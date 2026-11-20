@@ -1,0 +1,8 @@
+{
+  "id": "com.phrecomp.test.provider",
+  "name": "Test Provider Mod",
+  "version": "1.0.0",
+  "author": "TestSuite",
+  "description": "Native C++ mod exporting TestMathService.",
+  "runtime": "ph.native@1.0"
+}

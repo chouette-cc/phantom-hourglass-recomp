@@ -12,6 +12,8 @@ Zelda: Phantom Hourglass* is © Nintendo. This project is not affiliated with or
 | `recompiler/`, `runtime/`, `common/`, `cmake/`, `third_party/CMakeLists.txt`, `third_party/compat`, the `tools/` they use | [FFCCEOT-Recomp](https://github.com/JonathanDC64/FFCCEOT-Recomp) by JonathanDC64: its game-agnostic recompiler (`ntr-recomp`) and DS runtime (`ntr-runtime`), used as the engine of this fork with small changes (Phantom Hourglass ROM list, microphone input) | GPL-3.0 |
 | `third_party/melonDS` | [melonDS](https://github.com/melonDS-emu/melonDS) | GPL-3.0 |
 | SDL3 (fetched at build time) | [SDL](https://libsdl.org) | zlib |
+| Lua 5.4.7 (fetched at build time) | [Lua](https://www.lua.org) | MIT |
+| miniz 3.1.0 (fetched at build time) | [miniz](https://github.com/richgel999/miniz) | MIT |
 | `frontend/src/font8x8_basic.h` (the menu's text) | [font8x8](https://github.com/dhepper/font8x8) by Daniel Hepper, after the IBM VGA fonts | public domain |
 | `third_party/stb/stb_truetype.h` (TrueType rasterizer for HD text) | [stb](https://github.com/nothings/stb) by Sean Barrett | MIT / public domain |
 | `third_party/stb/stb_image.h`, `stb_image_write.h` (PNG loading/dumping for custom texture packs) | [stb](https://github.com/nothings/stb) by Sean Barrett | MIT / public domain |

@@ -39,10 +39,25 @@ public:
     void screen(const ntr::Frame& frame, int layer, const Rect& where, bool smooth, bool wide = false);
     // Optional HD vector text overlay for layer (0 top, 1 bottom), aligned to `where` (and any widescreen HUD moves).
     void draw_hd_text(int layer, const Rect& where, int wide_extra, const HudMove* hud = nullptr, int hud_count = 0);
+    // Extended screen draw for mods: sub-rect in normalized [0..1] screen coordinates, opacity and tint (0xAARRGGBB).
+    void screen_ex(const ntr::Frame& frame, int layer, const Rect& where, float u0, float v0, float u1, float v1,
+                   bool smooth, bool wide = false, float alpha = 1.0f, uint32_t tint_argb = 0xFFFFFFFFu);
     void fill(const Rect& where, uint32_t argb);
+    void outline(const Rect& where, float thickness, uint32_t argb);
+    // Scissor clip in window pixels (top-left origin); clear_clip() restores full window.
+    void set_clip(const Rect& where);
+    void clear_clip();
     // 8x8 characters at `size` pixels each; returns the width drawn.
     float text(float x, float y, float size, const std::string& s, uint32_t argb);
     void end();
+
+    // Custom RGBA8 textures for mods (handle >= 1, 0 on failure). Cleared on reload or shutdown.
+    int create_image(const uint32_t* rgba_pixels, int width, int height, bool smooth = true);
+    void destroy_image(int id);
+    void clear_mod_images();
+    bool image_size(int id, int& width, int& height) const;
+    void draw_image(int id, const Rect& where, float u0 = 0.0f, float v0 = 0.0f, float u1 = 1.0f, float v1 = 1.0f,
+                    float alpha = 1.0f, uint32_t tint_argb = 0xFFFFFFFFu);
 
     // Save state pictures: both screens (256 x 384, 0xAARRGGBB, top then bottom) of slot 0-11, kept in a texture;
     // thumbnail() draws one screen of one (layer 0 top, 1 bottom).
@@ -51,12 +66,18 @@ public:
 
     // Both screens of `frame`, stacked (top then bottom), at the renderer's resolution, as 0xAARRGGBB rows.
     bool read_screens(const ntr::Frame& frame, std::vector<uint32_t>& out, int& width, int& height);
+    // The composited window backbuffer (including mod custom rendering & overlays), top-down 0xAARRGGBB rows.
+    bool read_backbuffer(std::vector<uint32_t>& out, int& width, int& height);
 
 private:
     struct HdAtlasGlyph {
         float u0 = 0, v0 = 0, u1 = 0, v1 = 0;
         int w = 0, h = 0, xoff = 0, yoff = 0;
         bool empty = true;
+    };
+    struct ModImage {
+        unsigned tex = 0;
+        int w = 0, h = 0;
     };
     void quad(const Rect& r, float u0, float v0, float u1, float v1);
     void reset_hd_atlas(float px_height);
@@ -72,6 +93,7 @@ private:
     int hd_pen_x_ = 1, hd_pen_y_ = 1, hd_row_h_ = 0;
     std::unordered_map<uint16_t, HdAtlasGlyph> hd_glyphs_;
     std::vector<HdGlyph> hd_scratch_;
+    std::vector<ModImage> mod_images_;
     mutable unsigned checked_frame_texture_ = 0;
     mutable bool checked_frame_texture_valid_ = true;
     int u_view_ = -1, u_mode_ = -1, u_layer_ = -1, u_color_ = -1, u_tex_ = -1, u_font_ = -1;

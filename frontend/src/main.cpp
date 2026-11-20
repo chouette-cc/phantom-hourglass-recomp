@@ -47,6 +47,8 @@
 
 #include "game_module.hpp"
 #include "layout.hpp"
+#include "mod_manager.hpp"
+#include "mod_romfs.hpp"
 #include "ntr/rom.hpp"
 #include "ntr/runtime.hpp"
 #include "ntr/texpack.hpp"
@@ -89,6 +91,8 @@ std::atomic<bool> resume_done{false};
 std::atomic<int> wide_mode{-1};
 std::atomic<int> hd_text{-1};
 std::atomic<int> custom_textures{-1};
+std::atomic<bool> reload_mods{false};
+std::atomic<int> loaded_mod_count{0};
 }  // namespace ph::pad
 
 namespace {
@@ -310,6 +314,7 @@ struct ScriptStep {
     uint32_t buttons = 0;
     int tx = -1, ty = -1;
     std::string shot;
+    std::string window_shot;
     bool quit = false;
     bool blow = false;  // the microphone hears blowing
     int save_slot = 0, load_slot = 0;  // savestate N / loadstate N
@@ -351,6 +356,8 @@ bool load_script(const fs::path& p, std::vector<ScriptStep>& out, std::string& e
             (cmd == "savestate" ? s.save_slot : s.load_slot) = slot;
         } else if (cmd == "shot") {
             std::getline(ss >> std::ws, s.shot);
+        } else if (cmd == "windowshot") {
+            std::getline(ss >> std::ws, s.window_shot);
         } else if (cmd == "press" || cmd == "touch") {
             ss >> arg;
             if (cmd == "press") {
@@ -386,6 +393,17 @@ struct Shared {
     std::atomic<bool> blow_sample{false};
     std::atomic<bool> stick_on{false};       // the analog stick moves Link (ph_stick.hpp)
     std::atomic<int> stick_x{0}, stick_y{0};  // where it is, -1000..1000 (y down)
+    // Host pointer & keyboard snapshots for mods:
+    std::atomic<float> pointer_x{0}, pointer_y{0};
+    std::atomic<bool> pointer_down{false};
+    std::atomic<bool> pointer_just_pressed{false};
+    std::atomic<bool> pointer_just_released{false};
+    std::atomic<bool> right_down{false};
+    std::atomic<bool> right_just_pressed{false};
+    std::atomic<int> win_w{1}, win_h{1};
+    std::mutex keys_mutex;
+    std::array<uint8_t, SDL_SCANCODE_COUNT> keys_down{};
+    std::array<uint8_t, SDL_SCANCODE_COUNT> keys_pressed{};
     // Widescreen as drawn: the extra pixels each side of the wide screen (0: none), and its layer (0 top, 1 bottom).
     std::atomic<int> wide_extra{0}, wide_layer{1};
     std::mutex hud_mutex;  // the HUD clusters moved to the edges in the frame shown (ph::to_ds)
@@ -408,7 +426,26 @@ struct Shared {
     bool europe = false;
     int menu_selected = 0;
     int menu_page = 0;
+    int menu_selected_mod = 0;
     bool video_dirty = false;
+    std::atomic<int> mod_layout_request{-1};
+    struct ModAction {
+        enum class Kind { Reload, Toggle, StepConfig };
+        Kind kind = Kind::Reload;
+        std::string mod_id;
+        std::string cfg_key;
+        bool enable = false;
+        int dir = 0;
+    };
+    std::mutex mod_action_mutex;
+    std::vector<ModAction> mod_actions;
+    void push_mod_action(ModAction a) {
+        std::lock_guard<std::mutex> lock(mod_action_mutex);
+        mod_actions.push_back(std::move(a));
+    }
+    ph::ModManager* mods = nullptr;
+    std::mutex shot_name_mutex;
+    std::string shot_custom_name;
     std::atomic<bool> gpu_failed{false};  // the GPU renderer could not start
     std::atomic<bool> compute_failed{false};  // the compute renderer was asked for and cannot run (the OpenGL one does)
     std::atomic<int> gl_display{0};       // 1: the game thread draws with OpenGL; -1: it cannot (phone fallback)
@@ -479,6 +516,7 @@ public:
     // background (not in scripted test runs).
     void set_resume(bool continue_at_start, bool resume) { continue_ = continue_at_start, resume_ = resume; }
     void set_gl(ph::GlPresenter* gl) { gl_ = gl; }
+    void set_mods(ph::ModManager* mods) { mods_ = mods; }
 
     bool on_frame(const ntr::Frame& frame) override {
         const uint64_t f = ++frames_;
@@ -490,23 +528,108 @@ public:
             std::memcpy(s_.frame.data() + kW * kH, frame.bottom, sizeof(uint32_t) * kW * kH);
             s_.frame_new = true;
         }
-        if (gl_ && !s_.paused.load()) draw(frame);  // (in the background the window may be gone)
+        // Process pending mod actions (toggle / config step / hot-reload) safely on the game thread.
+        if (mods_) {
+            std::vector<Shared::ModAction> acts;
+            {
+                std::lock_guard<std::mutex> lock(s_.mod_action_mutex);
+                acts.swap(s_.mod_actions);
+            }
+            if (ph::pad::reload_mods.exchange(false)) acts.push_back(Shared::ModAction{Shared::ModAction::Kind::Reload, {}, {}, false, 0});
+            bool want_reload = false;
+            for (const auto& a : acts) {
+                if (a.kind == Shared::ModAction::Kind::Toggle) {
+                    mods_->set_mod_enabled(a.mod_id, a.enable);
+                    want_reload = true;
+                } else if (a.kind == Shared::ModAction::Kind::StepConfig) {
+                    mods_->step_mod_config(a.mod_id, a.cfg_key, a.dir);
+                } else if (a.kind == Shared::ModAction::Kind::Reload) {
+                    want_reload = true;
+                }
+            }
+            if (want_reload) {
+                const int loaded = mods_->reload_all(gl_);
+                ph::pad::loaded_mod_count = loaded;
+                s_.say(loaded > 0 ? ("Reloaded " + std::to_string(loaded) + " mod" + (loaded == 1 ? "" : "s"))
+                                  : "No active mods");
+            }
+        }
+
+        const auto now_tp = std::chrono::steady_clock::now();
+        const double dt = (last_frame_tp_ == std::chrono::steady_clock::time_point{})
+                              ? kFrameSeconds
+                              : std::clamp(std::chrono::duration<double>(now_tp - last_frame_tp_).count(), 0.001, 0.25);
+        last_frame_tp_ = now_tp;
+
+        // Snapshot host pointer/buttons so ph.input.pointer() is valid inside both "frame" and "draw" hooks.
+        const bool live = script_.empty();
+        ph::ModInputState mod_inp;
+        mod_inp.held = live ? s_.held.load() : 0;
+        mod_inp.pressed = live ? s_.pressed.exchange(0) : (s_.pressed.exchange(0), 0u);
+        mod_inp.touching = live && s_.touching.load();
+        mod_inp.tx = s_.touch_x.load();
+        mod_inp.ty = s_.touch_y.load();
+        mod_inp.blow = live && s_.blow.load();
+        mod_inp.blow_sample = live && s_.blow_sample.load();
+        mod_inp.lid = ntr::lid_closed();
+        mod_inp.stick_on = live && s_.stick_on.load();
+        mod_inp.stick_x = float(s_.stick_x.load()) / 1000.0f;
+        mod_inp.stick_y = float(s_.stick_y.load()) / 1000.0f;
+        mod_inp.pointer_x = s_.pointer_x.load();
+        mod_inp.pointer_y = s_.pointer_y.load();
+        mod_inp.pointer_down = live && s_.pointer_down.load();
+        mod_inp.pointer_just_pressed = live && s_.pointer_just_pressed.exchange(false);
+        mod_inp.pointer_just_released = live && s_.pointer_just_released.exchange(false);
+        mod_inp.right_down = live && s_.right_down.load();
+        mod_inp.right_just_pressed = live && s_.right_just_pressed.exchange(false);
+        mod_inp.win_w = s_.win_w.load();
+        mod_inp.win_h = s_.win_h.load();
+
+        std::string pending_window_shot;
+        for (const ScriptStep& st : script_)
+            if (st.frame == f && !st.window_shot.empty()) pending_window_shot = st.window_shot;
+
+        if (mods_) {
+            mods_->set_input_snapshot(mod_inp);
+            mods_->on_frame(f, float(ph::pad::game_fps10.load()) / 10.0f, dt);
+        }
+        if (gl_ && !s_.paused.load()) draw(frame, true, pending_window_shot);  // (in the background the window may be gone)
 
         // Input for the next frame: the player's, plus any script steps active then.
         // (A scripted run takes only the script's input, so it does the same thing whatever happens in the window.)
-        const bool live = script_.empty();
-        uint32_t held = live ? s_.held.load() : 0;
-        uint32_t pressed = s_.pressed.exchange(0);
-        if (!live) pressed = 0;
-        bool touching = live && s_.touching.load();
-        int tx = s_.touch_x.load(), ty = s_.touch_y.load();
-        bool blow = live && s_.blow.load();
-        bool blow_sample = live && s_.blow_sample.load();
-        if (live && s_.stick_on.load()) {  // (a finger on the touch screen comes first)
-            const float sx = touching ? 0.0f : float(s_.stick_x.load()) / 1000.0f;
-            const float sy = touching ? 0.0f : float(s_.stick_y.load()) / 1000.0f;
+        uint32_t held = mod_inp.held;
+        uint32_t pressed = mod_inp.pressed;
+        bool touching = mod_inp.touching;
+        int tx = mod_inp.tx, ty = mod_inp.ty;
+        bool blow = mod_inp.blow;
+        bool blow_sample = mod_inp.blow_sample;
+        if (live && mod_inp.stick_on) {  // (a finger on the touch screen comes first)
+            const float sx = touching ? 0.0f : mod_inp.stick_x;
+            const float sy = touching ? 0.0f : mod_inp.stick_y;
             int x = 0, y = 0;
             if (stick_.touch_for(*rt_, sx, sy, x, y)) touching = true, tx = x, ty = y;
+        }
+        if (mods_ && live) {
+            mod_inp.held = held;
+            mod_inp.pressed = pressed;
+            mod_inp.touching = touching;
+            mod_inp.tx = tx;
+            mod_inp.ty = ty;
+            mod_inp.blow = blow;
+            mod_inp.blow_sample = blow_sample;
+            mods_->on_input(mod_inp);
+            held = mod_inp.held;
+            pressed = mod_inp.pressed;
+            touching = mod_inp.touching;
+            tx = mod_inp.tx;
+            ty = mod_inp.ty;
+            blow = mod_inp.blow;
+            blow_sample = mod_inp.blow_sample;
+            if (mod_inp.lid != ntr::lid_closed()) ntr::set_lid_closed(mod_inp.lid);
+        }
+        {
+            std::lock_guard<std::mutex> lock(s_.keys_mutex);
+            s_.keys_pressed.fill(0);
         }
         bool quit = false;
         for (const ScriptStep& st : script_) {
@@ -526,7 +649,13 @@ public:
         if (s_.shot_request.exchange(false)) {
             std::error_code ec;
             fs::create_directories(s_.shot_dir, ec);
-            shot((s_.shot_dir / ("shot-" + std::to_string(SDL_GetTicks()) + ".png")).string());
+            std::string cname;
+            {
+                std::lock_guard<std::mutex> lock(s_.shot_name_mutex);
+                cname.swap(s_.shot_custom_name);
+            }
+            const std::string fname = cname.empty() ? ("shot-" + std::to_string(SDL_GetTicks()) + ".png") : cname;
+            shot((s_.shot_dir / fs::path(fname).filename()).string());
         }
         if (continue_ && f == 2) continue_ = false, start_load(kResumeSlot);
         if (const int slot = s_.state_save.exchange(0)) start_save(slot);
@@ -589,6 +718,7 @@ public:
             for (const char* ext : {"state", "png", "txt"}) fs::remove(slot_file(s_.state_dir, kResumeSlot, ext), ec);
             s_.states_version++;
         }
+        if (mods_) mods_->on_cartridge_save();
     }
 
     void on_state_saved(std::vector<uint8_t> state) override {
@@ -615,12 +745,14 @@ public:
             return (void)std::fprintf(stderr, "state: resume state written (for Continue)\n");
         }
         s_.say("Saved to slot " + std::to_string(slot));
+        if (mods_) mods_->on_save_state(slot);
     }
 
     void on_state_loaded(bool ok, const std::string& error) override {
         const int slot = load_slot_;
         load_slot_ = 0;
         if (ok) ph::hd_text_reset();
+        if (mods_) mods_->on_load_state(slot, ok);
         if (slot == kResumeSlot) return s_.say(ok ? "Continued from where you left off" : "Could not continue: " + error);
         s_.say(ok ? "Loaded slot " + std::to_string(slot) : "Slot " + std::to_string(slot) + " not loaded: " + error);
     }
@@ -673,17 +805,18 @@ private:
     }
 
     // Shows the frame (and the FPS counter, a note, the PC's menu) and applies a renderer change asked for in the menu.
-    void draw(const ntr::Frame& frame, bool count_game_frame = true) {
+    void draw(const ntr::Frame& frame, bool count_game_frame = true, const std::string& window_shot_path = {}) {
         Settings view;
         bool menu_open, video_dirty;
-        int selected, page;
+        int selected, page, selected_mod;
         {
             std::lock_guard<std::mutex> lock(s_.view_mutex);
             view = s_.view;
             menu_open = s_.menu_open;
             selected = s_.menu_selected;
             page = s_.menu_page;
-            (void)selected, (void)page;
+            selected_mod = s_.menu_selected_mod;
+            (void)selected, (void)page, (void)selected_mod;
             video_dirty = s_.video_dirty;
             s_.video_dirty = false;
         }
@@ -726,18 +859,36 @@ private:
             }
         }
         const ph::Views v = ph::compute_views(float(w), float(h), view.layout, view.stretch, extra, frame.wide_layer);
-        if (v.top_shown) {
-            gl_->screen(frame, 0, v.top, view.smooth, extra > 0);
-            const bool wide_top = extra > 0 && frame.wide_layer == 0;
-            gl_->draw_hd_text(0, v.top, wide_top ? extra : 0, wide_top ? frame_hud.data() : nullptr,
-                              wide_top ? frame_hud_count : 0);
+        const float ui = std::max(1.0f, SDL_GetWindowDisplayScale(window_));
+        ph::ModDrawContext mctx;
+        mctx.frame = &frame;
+        mctx.gl = gl_;
+        mctx.win_w = w;
+        mctx.win_h = h;
+        mctx.ui_scale = ui;
+        mctx.smooth = view.smooth;
+        mctx.wide = view.wide;
+        mctx.stretch = view.stretch;
+        mctx.layout = view.layout;
+        mctx.default_views = v;
+        mctx.wide_extra = extra;
+        mctx.wide_layer = frame.wide_layer;
+        const bool custom_drawn = mods_ && mods_->on_draw(mctx);
+        if (!custom_drawn) {
+            if (v.top_shown) {
+                gl_->screen(frame, 0, v.top, view.smooth, extra > 0);
+                const bool wide_top = extra > 0 && frame.wide_layer == 0;
+                gl_->draw_hd_text(0, v.top, wide_top ? extra : 0, wide_top ? frame_hud.data() : nullptr,
+                                  wide_top ? frame_hud_count : 0);
+            }
+            if (v.bottom_shown) {
+                gl_->screen(frame, 1, v.bottom, view.smooth, extra > 0);
+                const bool wide_bot = extra > 0 && frame.wide_layer == 1;
+                gl_->draw_hd_text(1, v.bottom, wide_bot ? extra : 0, wide_bot ? frame_hud.data() : nullptr,
+                                  wide_bot ? frame_hud_count : 0);
+            }
         }
-        if (v.bottom_shown) {
-            gl_->screen(frame, 1, v.bottom, view.smooth, extra > 0);
-            const bool wide_bot = extra > 0 && frame.wide_layer == 1;
-            gl_->draw_hd_text(1, v.bottom, wide_bot ? extra : 0, wide_bot ? frame_hud.data() : nullptr,
-                              wide_bot ? frame_hud_count : 0);
-        }
+        if (mods_) mods_->on_post_draw(mctx);
         // Frames per second: the game's frames shown, counted over a second.
         if (count_game_frame) fps_frames_++;
         if (count_game_frame) if (const uint64_t now = SDL_GetTicks(); now - fps_since_ >= 1000) {
@@ -745,7 +896,6 @@ private:
             fps_frames_ = 0;
             fps_since_ = now;
         }
-        const float ui = std::max(1.0f, SDL_GetWindowDisplayScale(window_));
         if (ph::pad::fps.load()) {  // (the PC menu, F4 and the phone menu all set it)
             char text[16];
             std::snprintf(text, sizeof text, "%d.%d", ph::pad::game_fps10.load() / 10, ph::pad::game_fps10.load() % 10);
@@ -789,6 +939,7 @@ private:
             menu.open = true;
             menu.page = page;
             menu.selected = selected;
+            menu.selected_mod = selected_mod;
             ph::MenuState ms{view.layout, view.gpu, view.scale, view.smooth, view.fps, view.fullscreen, s_.gpu_failed.load(),
                              view.slot, times_};
             ms.fps_corner = view.fps_corner;
@@ -803,6 +954,8 @@ private:
             ms.europe = s_.europe;
             ms.hd_text = view.hd_text;
             ms.custom_textures = view.custom_textures;
+            if (mods_) ms.mods = mods_->summaries();
+            ms.selected_mod = selected_mod;
             const int layer = view.layout == Layout::Top ? 0 : 1;  // the screen the player looks at
             menu.draw(*gl_, ms, float(w), float(h), ui, float(ph::pad::game_fps10.load()) / 10.0f,
                       [&](int slot, const ph::Rect& r) { gl_->thumbnail(slot, layer, r); });
@@ -810,6 +963,11 @@ private:
 #else
         (void)menu_open;
 #endif
+        if (!window_shot_path.empty()) {
+            std::vector<uint32_t> px;
+            int rw = 0, rh = 0;
+            if (gl_->read_backbuffer(px, rw, rh)) ph::write_png(window_shot_path, px.data(), rw, rh);
+        }
         gl_->end();
     }
 
@@ -845,7 +1003,9 @@ private:
     uint64_t video_asked_ = 0;  // the frame of the last renderer change asked for
     uint64_t fps_since_ = 0, fps_frames_ = 0;  // (the FPS counter)
     std::chrono::steady_clock::time_point next_{};
+    std::chrono::steady_clock::time_point last_frame_tp_{};
     ph::GlPresenter* gl_ = nullptr;  // (null: the phone's fallback, the main thread draws)
+    ph::ModManager* mods_ = nullptr;
     ph::Stick stick_;
 #ifndef __ANDROID__
     int thumbs_version_ = -1;  // the slot pictures in gl_ (states_version)
@@ -892,8 +1052,19 @@ int SDLCALL game_thread(void* p) {
     {
         std::unique_ptr<ntr::Runtime> rt = ntr::Runtime::create(std::move(a->rom), a->code, *a->host, std::move(a->options));
         a->host->attach(rt.get());
+        if (a->shared->mods) {
+            a->shared->mods->attach_runtime(rt.get());
+            const int loaded = a->shared->mods->load_all(have_gl ? &gl : nullptr);
+            ph::pad::loaded_mod_count = loaded;
+            if (loaded > 0) std::fprintf(stderr, "mods: %d active mod(s)\n", loaded);
+        }
         a->shared->started = 1;
         a->shared->exit_code = rt->run();
+        if (a->shared->mods) {
+            a->shared->mods->shutdown_all(have_gl ? &gl : nullptr);
+            a->shared->mods->attach_runtime(nullptr);
+            ph::pad::loaded_mod_count = 0;
+        }
         // (rt is destroyed here, on this thread: the GPU renderer's resources need the context)
     }
     if (have_gl) gl.shutdown();
@@ -986,10 +1157,11 @@ void error_box(const std::string& text, SDL_Window* window = nullptr) {
 
 int main(int argc, char** argv) {
     // ---- arguments ----
-    fs::path rom_path, save_path, data_dir, script_path, textures_dir, module_path = ph::default_module_path();
+    fs::path rom_path, save_path, data_dir, script_path, textures_dir, mods_dir_arg, module_path = ph::default_module_path();
     uint64_t exit_after = 0;
     bool fullscreen_arg = false, unpaced = false, read_only_save = false, continue_arg = false, wide_arg = false, wide21_arg = false;
     bool fps_probe_arg = false, hd_text_arg = false, custom_textures_arg = false, dump_textures_arg = false;
+    bool no_mods_arg = false, mod_dev_arg = false;
     std::string renderer_arg, textures_arg;
     int scale_arg = 0, fixes_arg = -1, language_arg = -2;
     for (int i = 1; i < argc; i++) {
@@ -997,6 +1169,9 @@ int main(int argc, char** argv) {
         const bool has = i + 1 < argc;
         if (a == "--save-file" && has) save_path = argv[++i];
         else if (a == "--data-dir" && has) data_dir = argv[++i];
+        else if (a == "--mods-dir" && has) mods_dir_arg = argv[++i];
+        else if (a == "--no-mods") no_mods_arg = true;
+        else if (a == "--mod-dev") mod_dev_arg = true;
         else if (a == "--input-script" && has) script_path = argv[++i];
         else if (a == "--exit-after-frames" && has) exit_after = std::strtoull(argv[++i], nullptr, 10);
         else if (a == "--module" && has) module_path = argv[++i];
@@ -1079,6 +1254,24 @@ int main(int argc, char** argv) {
     std::vector<ScriptStep> script;
     if (!script_path.empty() && !load_script(script_path, script, error)) return error_box(error), 1;
 
+    // ---- mods: discover, apply NitroFS/ROM overrides in memory before booting ----
+    // Scripted tests run without user mods unless --mods-dir was explicitly passed.
+    ph::ModManager mods;
+    const bool mods_enabled = !no_mods_arg && (!testing || !mods_dir_arg.empty());
+    const fs::path mods_dir = !mods_dir_arg.empty() ? mods_dir_arg : (data_dir / "mods");
+    if (mods_enabled) {
+        mods.discover(mods_dir, known->game_code, mod_dev_arg);
+        const auto rom_inputs = mods.rom_mod_inputs();
+        if (!rom_inputs.empty()) {
+            const ph::RomPatchStats stats = ph::apply_rom_mods(rom, known->game_code, rom_inputs);
+            for (const std::string& w : stats.warnings) std::fprintf(stderr, "mods: warning: %s\n", w.c_str());
+            if (stats.files_replaced || stats.byte_patches_applied)
+                std::fprintf(stderr, "mods: applied %zu NitroFS override(s) (%zu expanded) and %zu ROM patch(es)\n",
+                             stats.files_replaced, stats.files_appended, stats.byte_patches_applied);
+        }
+        mods.set_rom_view(nullptr, ph::index_rom_nitrofs(rom));
+    }
+
     Settings settings = testing ? Settings{} : load_settings(settings_path);
     if (testing) settings.language = kLangEn;  // scripted tests stay deterministic unless --language overrides it
     if (fullscreen_arg) settings.fullscreen = true;
@@ -1135,8 +1328,60 @@ int main(int argc, char** argv) {
     shared.europe = is_europe;
     shared.shot_dir = data_dir / "screenshots";
     shared.state_dir = data_dir / "states";
+    if (mods_enabled) {
+        ph::ModHostCallbacks mcb;
+        mcb.notify = [&](const std::string& msg, uint64_t ms) { shared.say(msg, ms); };
+        mcb.save_state = [&](int slot) { shared.state_save = slot; };
+        mcb.load_state = [&](int slot) { shared.state_load = slot; };
+        mcb.set_layout = [&](Layout l) { shared.mod_layout_request = int(l); };
+        mcb.get_layout = [&]() -> Layout {
+            std::lock_guard<std::mutex> lock(shared.view_mutex);
+            return shared.view.layout;
+        };
+        mcb.screenshot = [&](const std::string& name) {
+            {
+                std::lock_guard<std::mutex> lock(shared.shot_name_mutex);
+                shared.shot_custom_name = name;
+            }
+            shared.shot_request = true;
+        };
+        mcb.set_mic_blow = [&](bool on) { ntr::set_mic_blow(on); };
+        mcb.set_mic_sample = [&](bool on) { ntr::set_mic_sample(on); };
+        mcb.set_lid_closed = [&](bool closed) { ntr::set_lid_closed(closed); };
+        mcb.is_key_down = [&](const std::string& key_name) -> bool {
+            const SDL_Scancode sc = SDL_GetScancodeFromName(key_name.c_str());
+            if (sc <= SDL_SCANCODE_UNKNOWN || sc >= SDL_SCANCODE_COUNT) return false;
+            std::lock_guard<std::mutex> lock(shared.keys_mutex);
+            return shared.keys_down[size_t(sc)] != 0;
+        };
+        mcb.was_key_pressed = [&](const std::string& key_name) -> bool {
+            const SDL_Scancode sc = SDL_GetScancodeFromName(key_name.c_str());
+            if (sc <= SDL_SCANCODE_UNKNOWN || sc >= SDL_SCANCODE_COUNT) return false;
+            std::lock_guard<std::mutex> lock(shared.keys_mutex);
+            return shared.keys_pressed[size_t(sc)] != 0;
+        };
+        mcb.decode_image = [](const fs::path& path, std::vector<uint32_t>& rgba, int& w, int& h) -> bool {
+            SDL_Surface* raw = SDL_LoadSurface(path.string().c_str());
+            if (!raw) return false;
+            SDL_Surface* conv = SDL_ConvertSurface(raw, SDL_PIXELFORMAT_RGBA32);
+            SDL_DestroySurface(raw);
+            if (!conv) return false;
+            w = conv->w;
+            h = conv->h;
+            rgba.resize(size_t(w) * size_t(h));
+            const uint8_t* src = static_cast<const uint8_t*>(conv->pixels);
+            for (int y = 0; y < h; y++)
+                std::memcpy(rgba.data() + size_t(y) * size_t(w), src + size_t(y) * size_t(conv->pitch), size_t(w) * 4u);
+            SDL_DestroySurface(conv);
+            return true;
+        };
+        mods.set_callbacks(std::move(mcb));
+        mods.set_save_blob_dir(save_path.parent_path() / (save_path.stem().string() + ".moddata"));
+        shared.mods = &mods;
+    }
     Host host(shared, window, audio, std::move(script), exit_after, unpaced);
     host.set_resume(continue_arg && !testing, !testing);
+    if (mods_enabled) host.set_mods(&mods);
 #ifdef __ANDROID__
     const bool lifecycle_watch_registered = SDL_AddEventWatch(watch_android_lifecycle, &shared);
     if (!lifecycle_watch_registered) std::fprintf(stderr, "android: could not register SDL lifecycle event watch: %s\n", SDL_GetError());
@@ -1214,6 +1459,7 @@ int main(int argc, char** argv) {
         shared.menu_open = menu.open;
         shared.menu_selected = menu.selected;
         shared.menu_page = menu.page;
+        shared.menu_selected_mod = menu.selected_mod;
         menu_open = menu.open;
 #endif
         if (video) shared.video_dirty = true;
@@ -1239,6 +1485,8 @@ int main(int argc, char** argv) {
         ms.europe = is_europe;
         ms.hd_text = settings.hd_text;
         ms.custom_textures = settings.custom_textures;
+        if (mods_enabled) ms.mods = mods.summaries();
+        ms.selected_mod = menu.selected_mod;
         return ms;
     };
     auto menu_done = [&](const ph::MenuState& ms, ph::MenuResult r) {
@@ -1247,6 +1495,12 @@ int main(int argc, char** argv) {
                            ms.textures != settings.textures || ms.fixes != settings.fixes;
         const bool lang_changed = ms.language != settings.language;
         if (r == ph::MenuResult::Quit) request_quit();
+        if (r == ph::MenuResult::ToggleMod && mods_enabled)
+            shared.push_mod_action({Shared::ModAction::Kind::Toggle, ms.action_mod_id, {}, ms.action_mod_enable, 0});
+        if (r == ph::MenuResult::StepModConfig && mods_enabled)
+            shared.push_mod_action({Shared::ModAction::Kind::StepConfig, ms.action_mod_id, ms.action_cfg_key, false, ms.action_cfg_dir});
+        if (r == ph::MenuResult::ReloadMods && mods_enabled)
+            shared.push_mod_action(Shared::ModAction{Shared::ModAction::Kind::Reload, {}, {}, false, 0});
         settings.layout = ms.layout, settings.gpu = ms.gpu, settings.scale = ms.scale;
         settings.smooth = ms.smooth, settings.fps = ms.fps, settings.slot = ms.slot;
         settings.fps_corner = ms.fps_corner, settings.stretch = ms.stretch;
@@ -1289,6 +1543,8 @@ int main(int argc, char** argv) {
     SDL_FingerID finger = 0;
     bool finger_down = false;
     float finger_x = 0, finger_y = 0;  // window pixels
+    bool prev_pointer_down = false;
+    bool prev_right_down = false;
     std::vector<uint32_t> pixels(size_t(kW) * kH * 2);
     while (!shared.game_done) {
 #ifdef __ANDROID__
@@ -1355,6 +1611,10 @@ int main(int argc, char** argv) {
                     }
 #endif
                     shared.pressed |= key_bit(k);
+                    if (k > SDL_SCANCODE_UNKNOWN && k < SDL_SCANCODE_COUNT) {
+                        std::lock_guard<std::mutex> lock(shared.keys_mutex);
+                        shared.keys_pressed[size_t(k)] = 1;
+                    }
                     if (k == SDL_SCANCODE_F11 || (k == SDL_SCANCODE_RETURN && (e.key.mod & SDL_KMOD_ALT))) {
                         set_fullscreen(!settings.fullscreen);
                     } else if (k == SDL_SCANCODE_TAB) {  // swap the screen shown
@@ -1366,6 +1626,8 @@ int main(int argc, char** argv) {
                     } else if (k == SDL_SCANCODE_F4) {  // FPS counter
                         settings.fps = !settings.fps;
                         ph::pad::fps = settings.fps;
+                    } else if (k == SDL_SCANCODE_F6 && mods_enabled) {  // hot-reload mods
+                        shared.push_mod_action(Shared::ModAction{Shared::ModAction::Kind::Reload, {}, {}, false, 0});
                     } else if (k == SDL_SCANCODE_F12) {  // screenshot of both screens
                         shared.shot_request = true;
                     } else if (k == SDL_SCANCODE_F5) {  // save state, to the slot chosen in the menu
@@ -1384,6 +1646,10 @@ int main(int argc, char** argv) {
 
         // Buttons held (the keyboard's only while the menu is closed), fast-forward on the ` key.
         const bool* keys = SDL_GetKeyboardState(nullptr);
+        {
+            std::lock_guard<std::mutex> lock(shared.keys_mutex);
+            for (int sc = 0; sc < SDL_SCANCODE_COUNT; sc++) shared.keys_down[size_t(sc)] = (!menu_open && keys[sc]) ? 1 : 0;
+        }
         shared.held = (menu_open ? 0u : keyboard_buttons()) | gamepad_buttons(pad, settings.stick) | ph::pad::held.load();
         // The analog stick: the gamepad's left stick or the phone's on-screen one, whichever is pushed farther.
         if (const int want = ph::pad::stick_mode.exchange(-1); want >= 0) settings.stick = want != 0;
@@ -1408,6 +1674,7 @@ int main(int argc, char** argv) {
         // Choices from the Android app's on-screen pad and menu.
         bool changed = false;
         if (const int want = ph::pad::show.exchange(-1); want >= 0 && want <= 2) settings.layout = Layout(want), changed = true;
+        if (const int want = shared.mod_layout_request.exchange(-1); want >= 0 && want <= 2) settings.layout = Layout(want), changed = true;
         if (const int want = ph::pad::smooth.exchange(-1); want >= 0) settings.smooth = want != 0, changed = true;
         if (const int want = ph::pad::hd_text.exchange(-1); want >= 0) {
             settings.hd_text = want != 0;
@@ -1450,16 +1717,61 @@ int main(int argc, char** argv) {
         if (const int slot = ph::pad::state_load.exchange(0); slot >= 1 && slot <= kSlots) shared.state_load = slot;
         if (changed) publish(video);
 
-        // The stylus: the mouse's left button or the finger, where the touch screen is shown.
+        // The stylus: the mouse's left button or the finger, where the touch screen is shown (or mod touch rects).
         float mx = 0, my = 0;
-        bool down = !menu_open && (SDL_GetMouseState(&mx, &my) & SDL_BUTTON_LMASK) && SDL_GetMouseFocus() == window;
+        const SDL_MouseButtonFlags mb = SDL_GetMouseState(&mx, &my);
+        const bool focused = SDL_GetMouseFocus() == window;
+        bool down = !menu_open && (mb & SDL_BUTTON_LMASK) && focused;
+        const bool rdown = !menu_open && (mb & SDL_BUTTON_RMASK) && focused;
         mx *= density, my *= density;  // (window coordinates to pixels)
         if (finger_down && !menu_open) down = true, mx = finger_x, my = finger_y;
+        shared.win_w = win_pw;
+        shared.win_h = win_ph;
+        shared.pointer_x = mx;
+        shared.pointer_y = my;
+        shared.pointer_down = down;
+        if (down && !prev_pointer_down) shared.pointer_just_pressed = true;
+        if (!down && prev_pointer_down) shared.pointer_just_released = true;
+        prev_pointer_down = down;
+        shared.right_down = rdown;
+        if (rdown && !prev_right_down) shared.right_just_pressed = true;
+        prev_right_down = rdown;
+
         const int wide_extra = settings.wide ? shared.wide_extra.load() : 0, wide_layer = shared.wide_layer.load();
         const ph::Views views =
             ph::compute_views(float(win_pw), float(win_ph), settings.layout, settings.stretch, wide_extra, wide_layer);
         bool touching = false;
-        if (down && views.bottom_shown && views.bottom.contains(mx, my) && views.bottom.w > 0) {
+        const std::vector<ph::ModTouchRect> mod_rects = mods_enabled ? mods.touch_rects() : std::vector<ph::ModTouchRect>{};
+        if (down && !mod_rects.empty()) {
+            for (const ph::ModTouchRect& tr : mod_rects) {
+                if (!tr.rect.contains(mx, my) || tr.rect.w <= 0.0f || tr.rect.h <= 0.0f) continue;
+                if (tr.block) {
+                    touching = false;
+                    break;
+                }
+                touching = true;
+                int tx = 0, ty = 0;
+                if (tr.has_src) {
+                    const float nx = (mx - tr.rect.x) / tr.rect.w;
+                    const float ny = (my - tr.rect.y) / tr.rect.h;
+                    tx = std::clamp(int(tr.src_ds.x + nx * tr.src_ds.w), 0, kW - 1);
+                    ty = std::clamp(int(tr.src_ds.y + ny * tr.src_ds.h), 0, kH - 1);
+                } else {
+                    std::array<ph::HudMove, 32> hud{};
+                    int hud_count = 0;
+                    const int use_extra = (tr.wide && wide_layer == 1) ? wide_extra : 0;
+                    if (use_extra) {
+                        std::lock_guard<std::mutex> lock(shared.hud_mutex);
+                        hud = shared.hud;
+                        hud_count = shared.hud_count;
+                    }
+                    ph::to_ds(tr.rect, use_extra, mx, my, tx, ty, hud.data(), hud_count);
+                }
+                shared.touch_x = tx;
+                shared.touch_y = ty;
+                break;
+            }
+        } else if (down && views.bottom_shown && views.bottom.contains(mx, my) && views.bottom.w > 0) {
             touching = true;
             int tx = 0, ty = 0;
             std::array<ph::HudMove, 32> hud{};

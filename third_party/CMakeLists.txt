@@ -477,4 +477,58 @@ if(FFCC_BUILD_GAME)
     EXCLUDE_FROM_ALL)
   FetchContent_MakeAvailable(SDL3)
 
+  # ---- Lua 5.4.7 (MIT licence): embedded scripting runtime for mods ----
+  FetchContent_Declare(lua
+    GIT_REPOSITORY https://github.com/lua/lua.git
+    GIT_TAG v5.4.7
+    GIT_SHALLOW TRUE)
+  FetchContent_MakeAvailable(lua)
+  set(LUA_CORE_SOURCES
+    ${lua_SOURCE_DIR}/lapi.c ${lua_SOURCE_DIR}/lauxlib.c ${lua_SOURCE_DIR}/lbaselib.c
+    ${lua_SOURCE_DIR}/lcode.c ${lua_SOURCE_DIR}/lcorolib.c ${lua_SOURCE_DIR}/lctype.c
+    ${lua_SOURCE_DIR}/ldblib.c ${lua_SOURCE_DIR}/ldebug.c ${lua_SOURCE_DIR}/ldo.c
+    ${lua_SOURCE_DIR}/ldump.c ${lua_SOURCE_DIR}/lfunc.c ${lua_SOURCE_DIR}/lgc.c
+    ${lua_SOURCE_DIR}/linit.c ${lua_SOURCE_DIR}/liolib.c ${lua_SOURCE_DIR}/llex.c
+    ${lua_SOURCE_DIR}/lmathlib.c ${lua_SOURCE_DIR}/lmem.c ${lua_SOURCE_DIR}/loadlib.c
+    ${lua_SOURCE_DIR}/lobject.c ${lua_SOURCE_DIR}/lopcodes.c ${lua_SOURCE_DIR}/loslib.c
+    ${lua_SOURCE_DIR}/lparser.c ${lua_SOURCE_DIR}/lstate.c ${lua_SOURCE_DIR}/lstring.c
+    ${lua_SOURCE_DIR}/lstrlib.c ${lua_SOURCE_DIR}/ltable.c ${lua_SOURCE_DIR}/ltablib.c
+    ${lua_SOURCE_DIR}/ltm.c ${lua_SOURCE_DIR}/lundump.c ${lua_SOURCE_DIR}/lutf8lib.c
+    ${lua_SOURCE_DIR}/lvm.c ${lua_SOURCE_DIR}/lzio.c)
+  add_library(lua_core STATIC ${LUA_CORE_SOURCES})
+  target_include_directories(lua_core SYSTEM PUBLIC ${lua_SOURCE_DIR})
+  if(MSVC)
+    target_compile_options(lua_core PRIVATE /w)
+    target_compile_definitions(lua_core PRIVATE _CRT_SECURE_NO_WARNINGS)
+  else()
+    target_compile_options(lua_core PRIVATE -w)
+    if(NOT WIN32)
+      target_link_libraries(lua_core PUBLIC m)
+    endif()
+  endif()
+
+  # ---- miniz 3.1.0 (MIT licence): ZIP / .phmod bundle extraction for mods ----
+  set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(BUILD_HEADER_ONLY OFF CACHE BOOL "" FORCE)
+  set(INSTALL_PROJECT OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(miniz
+    GIT_REPOSITORY https://github.com/richgel999/miniz.git
+    GIT_TAG 3.1.0
+    GIT_SHALLOW TRUE
+    EXCLUDE_FROM_ALL)
+  FetchContent_MakeAvailable(miniz)
+  add_library(miniz_core STATIC
+    ${miniz_SOURCE_DIR}/miniz.c
+    ${miniz_SOURCE_DIR}/miniz_tdef.c
+    ${miniz_SOURCE_DIR}/miniz_tinfl.c
+    ${miniz_SOURCE_DIR}/miniz_zip.c)
+  file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/miniz_gen/miniz_export.h "#pragma once\n#define MINIZ_EXPORT\n")
+  target_include_directories(miniz_core SYSTEM PUBLIC ${miniz_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/miniz_gen)
+  if(MSVC)
+    target_compile_options(miniz_core PRIVATE /w)
+    target_compile_definitions(miniz_core PRIVATE _CRT_SECURE_NO_WARNINGS)
+  else()
+    target_compile_options(miniz_core PRIVATE -w)
+  endif()
+
 endif()

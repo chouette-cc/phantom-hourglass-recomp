@@ -73,7 +73,9 @@ public:
             out_ += "    ntr_unimplemented(c, " + hexc(fn_.entry) + ");\n}\n\n";
             return out_;
         }
-        out_ += "    const uint32_t entry_lr = R(14);\n    (void)entry_lr;\n    NTR_ENTER(" + hexc(fn_.entry | (fn_.thumb ? 1u : 0u)) + ");\n    POLL();\n";
+        const std::string entry_hex = hexc(fn_.entry | (fn_.thumb ? 1u : 0u));
+        out_ += "    const uint32_t entry_lr = R(14);\n    (void)entry_lr;\n    NTR_ENTER(" + entry_hex +
+                ");\n    NTR_HOOK_CHECK(" + entry_hex + ", " + fn_.c_name() + ");\n    POLL();\n";
         if (!fn_.hook_before.empty()) out_ += "    " + fn_.hook_before + "(c);\n";
         if (!fn_.hook_instead.empty()) out_ += "    if (" + fn_.hook_instead + "(c)) return;\n";
         for (const std::string& w : fn_.warnings) out_ += "    /* warning: " + w + " */\n";
@@ -786,9 +788,21 @@ EmitStats emit_c(const Program& program, const Analysis& analysis, const std::fi
     {
         std::ofstream t(out_dir / "func_table.c", std::ios::binary);
         t << banner << "#include \"funcs.h\"\n#include <stddef.h>\n\nconst NtrFuncEntry ntr_recomp_functions[] = {\n";
-        for (const Function* f : order)
+        for (const Function* f : order) {
             t << "    {0x" << std::hex << (f->entry | (f->thumb ? 1 : 0)) << std::dec << "u, " << f->module << ", "
-              << f->c_name() << "},\n";
+              << f->c_name() << ", ";
+            if (f->name.empty()) {
+                t << "NULL";
+            } else {
+                t << '"';
+                for (char ch : f->name) {
+                    if (ch == '\\' || ch == '"') t << '\\';
+                    t << ch;
+                }
+                t << '"';
+            }
+            t << "},\n";
+        }
         t << "};\nconst size_t ntr_recomp_function_count = " << order.size() << ";\n\n";
 
         // Overlays share run addresses, so the runtime identifies the resident one by up to four probe words: it

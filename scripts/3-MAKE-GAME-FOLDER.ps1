@@ -53,7 +53,7 @@ if ($DryRun) {
     exit 0
 }
 
-foreach ($d in @($GameDir, (Join-Path $GameDir 'rom'), (Join-Path $GameDir 'data\saves'))) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+foreach ($d in @($GameDir, (Join-Path $GameDir 'rom'), (Join-Path $GameDir 'data\saves'), (Join-Path $GameDir 'data\mods'))) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
 foreach ($c in $copies) { Copy-Item -LiteralPath $c[0] -Destination $c[1] -Force }
 foreach ($o in $old) { if (Test-Path $o) { Remove-Item -LiteralPath $o -Force; Step "removed the old $o" } }
 Step 'copied the program, the game and the ROM'

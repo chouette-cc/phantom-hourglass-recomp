@@ -79,4 +79,10 @@ public final class PhInput {
 
     /** The resume state asked for is written (or the game gave no moment for it). */
     public static native boolean nativeResumeDone();
+
+    /** Hot-reload all Lua mods in files/mods/. */
+    public static native void nativeReloadMods();
+
+    /** Number of currently active loaded mods. */
+    public static native int nativeLoadedModCount();
 }

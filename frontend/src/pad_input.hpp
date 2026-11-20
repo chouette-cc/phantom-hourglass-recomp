@@ -31,5 +31,7 @@ extern std::atomic<int> fixes;             // the 3D fixes asked for (bits: 1 fe
 extern std::atomic<int> wide_mode;         // widescreen asked for (0 off, 1 16:9, 2 21:9); -1: no change
 extern std::atomic<int> hd_text;           // HD vector dialogue text (0 off, 1 on); -1: no change
 extern std::atomic<int> custom_textures;   // custom HD texture pack (0 off, 1 on); -1: no change
+extern std::atomic<bool> reload_mods;      // hot-reload all mods from <data-dir>/mods/
+extern std::atomic<int> loaded_mod_count;  // number of active loaded mods (for Android menu)
 
 }  // namespace ph::pad

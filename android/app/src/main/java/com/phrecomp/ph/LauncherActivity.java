@@ -28,8 +28,15 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 /**
  * The start screen: bring in your own Phantom Hourglass ROM (and, if you like, a save from another emulator), then
@@ -37,7 +44,7 @@ import java.util.Locale;
  * originals are only read. A save is never overwritten without a dated backup next to it.
  */
 public final class LauncherActivity extends Activity {
-    private static final int PICK_ROM = 1, PICK_SAVE = 2, EXPORT_SAVE = 3;
+    private static final int PICK_ROM = 1, PICK_SAVE = 2, EXPORT_SAVE = 3, PICK_MOD_ZIP = 4;
     // The dumps the game can be recompiled for (SHA-1): USA and Europe, clean or D-pad patch.
     private static final String[] KNOWN = {
             "4c8f52dd719918bbcd46e73a8bae8628139c1b85",
@@ -50,6 +57,8 @@ public final class LauncherActivity extends Activity {
     private File rom() { return new File(getFilesDir(), "rom/azee.nds"); }
 
     private File save() { return new File(getFilesDir(), "saves/azee.sav"); }
+
+    private File modsDir() { return new File(getFilesDir(), "mods"); }
 
     /** The resume state the game writes when it quits or goes to the background (frontend main.cpp). */
     private File resume(String ext) { return new File(getFilesDir(), "states/resume." + ext); }
@@ -144,6 +153,7 @@ public final class LauncherActivity extends Activity {
         }
         final LinearLayout row = look.row(column);
         look.small(row, "Save file", this::saveFile);
+        look.small(row, "Mods", this::manageMods);
         look.small(row, "Settings", () -> look.settings(prefs(), GPU_DEFAULT, this::refresh));
         look.small(row, "Game ROM", this::gameRom);
         look.note(column, LauncherLook.summary(prefs(), GPU_DEFAULT) + "  ·  Save states: in the game's ≡ menu");
@@ -220,6 +230,7 @@ public final class LauncherActivity extends Activity {
             try {
                 if (request == PICK_ROM) message = importRom(uri);
                 else if (request == PICK_SAVE) message = importSave(uri);
+                else if (request == PICK_MOD_ZIP) message = importModZip(uri);
                 else message = exportSave(uri);
             } catch (IOException e) {
                 message = "That did not work: " + e.getMessage();
@@ -276,6 +287,227 @@ public final class LauncherActivity extends Activity {
             while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
         }
         return "Save exported.";
+    }
+
+    // ---- mods management & .zip import -------------------------------------------------------------------------------
+
+    private Map<String, Boolean> readModsIni() {
+        final Map<String, Boolean> map = new LinkedHashMap<>();
+        final File ini = new File(modsDir(), "mods.ini");
+        if (!ini.isFile()) return map;
+        try (BufferedReader r = new BufferedReader(new FileReader(ini))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                final int eq = line.indexOf('=');
+                if (eq <= 0) continue;
+                final String k = line.substring(0, eq).trim();
+                final String v = line.substring(eq + 1).trim();
+                map.put(k, "1".equals(v) || "true".equalsIgnoreCase(v) || "on".equalsIgnoreCase(v));
+            }
+        } catch (IOException ignored) {
+        }
+        return map;
+    }
+
+    private void writeModsIni(Map<String, Boolean> map) {
+        final File dir = modsDir();
+        //noinspection ResultOfMethodCallIgnored
+        dir.mkdirs();
+        final StringBuilder sb = new StringBuilder("# Phantom Hourglass Recomp mod enable states\n");
+        for (Map.Entry<String, Boolean> e : map.entrySet())
+            sb.append(e.getKey()).append('=').append(e.getValue() ? '1' : '0').append('\n');
+        try (FileOutputStream out = new FileOutputStream(new File(dir, "mods.ini"))) {
+            out.write(sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (IOException ignored) {
+        }
+    }
+
+    private static String extractJsonString(String json, String key, String fallback) {
+        final String pat = "\"" + key + "\"";
+        final int k = json.indexOf(pat);
+        if (k < 0) return fallback;
+        final int colon = json.indexOf(':', k + pat.length());
+        if (colon < 0) return fallback;
+        final int q1 = json.indexOf('"', colon + 1);
+        if (q1 < 0) return fallback;
+        final int q2 = json.indexOf('"', q1 + 1);
+        return q2 > q1 ? json.substring(q1 + 1, q2) : fallback;
+    }
+
+    private static String readSmallText(File f) {
+        if (!f.isFile() || f.length() > 256 * 1024) return "";
+        try (FileInputStream in = new FileInputStream(f)) {
+            final byte[] buf = new byte[(int) f.length()];
+            final int n = in.read(buf);
+            return n > 0 ? new String(buf, 0, n, java.nio.charset.StandardCharsets.UTF_8) : "";
+        } catch (IOException e) {
+            return "";
+        }
+    }
+
+    private static String sanitizeModId(String raw) {
+        final StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < raw.length(); i++) {
+            final char c = Character.toLowerCase(raw.charAt(i));
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') sb.append(c);
+            else if (c == ' ') sb.append('-');
+        }
+        return sb.length() > 0 ? sb.toString() : "mod";
+    }
+
+    private void manageMods() {
+        final File dir = modsDir();
+        final List<File> modFolders = new ArrayList<>();
+        final File[] children = dir.listFiles();
+        if (children != null) {
+            Arrays.sort(children, (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
+            for (File c : children)
+                if (c.isDirectory() && new File(c, "mod.json").isFile()) modFolders.add(c);
+        }
+        final Map<String, Boolean> states = readModsIni();
+        final List<String> labels = new ArrayList<>();
+        final List<String> ids = new ArrayList<>();
+        for (File mf : modFolders) {
+            final String json = readSmallText(new File(mf, "mod.json"));
+            final String id = sanitizeModId(extractJsonString(json, "id", mf.getName()));
+            final String name = extractJsonString(json, "name", mf.getName());
+            final String ver = extractJsonString(json, "version", "1.0.0");
+            final boolean on = states.containsKey(id) ? Boolean.TRUE.equals(states.get(id)) : true;
+            ids.add(id);
+            labels.add((on ? "✓ " : "   ") + name + " v" + ver);
+        }
+        if (labels.isEmpty()) {
+            look.dialog().setTitle("Mods")
+                    .setMessage("No mods installed yet.\n\nImport a mod bundle (.phmod or .zip containing mod.json) to install it into app storage.")
+                    .setPositiveButton("Import mod (.phmod / .zip)…", (d, w) -> pick(PICK_MOD_ZIP))
+                    .setNegativeButton("Back", null).show();
+            return;
+        }
+        final String[] shown = labels.toArray(new String[0]);
+        look.dialog().setTitle("Mods (tap to enable/disable)")
+                .setItems(shown, (d, which) -> {
+                    final String id = ids.get(which);
+                    final boolean cur = states.containsKey(id) ? Boolean.TRUE.equals(states.get(id)) : true;
+                    states.put(id, !cur);
+                    writeModsIni(states);
+                    manageMods();
+                })
+                .setPositiveButton("Import mod (.phmod / .zip)…", (d, w) -> pick(PICK_MOD_ZIP))
+                .setNeutralButton("Remove…", (d, w) -> removeModDialog(modFolders, labels))
+                .setNegativeButton("Done", null).show();
+    }
+
+    private void removeModDialog(List<File> modFolders, List<String> labels) {
+        final String[] names = new String[labels.size()];
+        for (int i = 0; i < labels.size(); i++) names[i] = labels.get(i).replaceFirst("^[✓ ]+", "");
+        look.dialog().setTitle("Remove which mod?")
+                .setItems(names, (d, which) -> {
+                    deleteRecursive(modFolders.get(which));
+                    manageMods();
+                })
+                .setNegativeButton("Cancel", null).show();
+    }
+
+    private static void deleteRecursive(File f) {
+        if (f.isDirectory()) {
+            final File[] kids = f.listFiles();
+            if (kids != null) for (File k : kids) deleteRecursive(k);
+        }
+        //noinspection ResultOfMethodCallIgnored
+        f.delete();
+    }
+
+    /** Extracts a mod .zip (with mod.json at root or one folder deep) safely into files/mods/<id>/. */
+    private String importModZip(Uri uri) throws IOException {
+        final File tmpRoot = new File(getCacheDir(), "mod-import-" + System.currentTimeMillis());
+        if (!tmpRoot.mkdirs()) throw new IOException("cannot create temp directory");
+        try {
+            final String canonRoot = tmpRoot.getCanonicalPath() + File.separator;
+            int fileCount = 0;
+            long totalBytes = 0;
+            try (InputStream raw = getContentResolver().openInputStream(uri)) {
+                if (raw == null) throw new IOException("cannot open the selected file");
+                try (ZipInputStream zis = new ZipInputStream(raw)) {
+                    ZipEntry entry;
+                    final byte[] buf = new byte[1 << 16];
+                    while ((entry = zis.getNextEntry()) != null) {
+                        final String name = entry.getName().replace('\\', '/');
+                        if (name.startsWith("/") || name.contains(".."))
+                            throw new IOException("unsafe path inside zip: " + name);
+                        final File out = new File(tmpRoot, name);
+                        if (!out.getCanonicalPath().startsWith(canonRoot))
+                            throw new IOException("zip path escapes target directory: " + name);
+                        if (entry.isDirectory()) {
+                            //noinspection ResultOfMethodCallIgnored
+                            out.mkdirs();
+                        } else {
+                            //noinspection ResultOfMethodCallIgnored
+                            out.getParentFile().mkdirs();
+                            try (FileOutputStream fos = new FileOutputStream(out)) {
+                                int n;
+                                while ((n = zis.read(buf)) > 0) {
+                                    totalBytes += n;
+                                    if (totalBytes > 256L << 20) throw new IOException("mod archive exceeds 256 MB");
+                                    fos.write(buf, 0, n);
+                                }
+                            }
+                            fileCount++;
+                        }
+                        zis.closeEntry();
+                    }
+                }
+            }
+            if (fileCount == 0) return "That archive is empty.";
+
+            // Locate mod.json at root or inside a single top-level directory.
+            File modRoot = null;
+            if (new File(tmpRoot, "mod.json").isFile()) {
+                modRoot = tmpRoot;
+            } else {
+                final File[] kids = tmpRoot.listFiles();
+                if (kids != null) {
+                    for (File k : kids) {
+                        if (k.isDirectory() && new File(k, "mod.json").isFile()) {
+                            modRoot = k;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (modRoot == null) return "No mod.json found in that zip archive.";
+
+            final String json = readSmallText(new File(modRoot, "mod.json"));
+            final String id = sanitizeModId(extractJsonString(json, "id", modRoot.getName()));
+            final String name = extractJsonString(json, "name", id);
+            final File dest = new File(modsDir(), id);
+            if (dest.exists()) deleteRecursive(dest);
+            //noinspection ResultOfMethodCallIgnored
+            modsDir().mkdirs();
+            copyDirectory(modRoot, dest);
+            final Map<String, Boolean> states = readModsIni();
+            states.put(id, true);
+            writeModsIni(states);
+            return "Installed mod \"" + name + "\" (" + fileCount + " files).";
+        } finally {
+            deleteRecursive(tmpRoot);
+        }
+    }
+
+    private static void copyDirectory(File src, File dst) throws IOException {
+        if (src.isDirectory()) {
+            //noinspection ResultOfMethodCallIgnored
+            dst.mkdirs();
+            final File[] kids = src.listFiles();
+            if (kids != null) for (File k : kids) copyDirectory(k, new File(dst, k.getName()));
+        } else {
+            try (InputStream in = new FileInputStream(src); OutputStream out = new FileOutputStream(dst)) {
+                final byte[] buf = new byte[1 << 16];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            }
+        }
     }
 
     /** Copies a picked file to `to` and returns its SHA-1 (lowercase hex). */

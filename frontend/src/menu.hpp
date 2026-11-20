@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "layout.hpp"
+#include "mod_manager.hpp"
 
 namespace ph {
 
@@ -41,15 +42,23 @@ struct MenuState {
     bool europe = false;       // AZEP (Europe) ROM: also carries German and Italian
     bool hd_text = false;      // HD vector dialogue text (Inter Bold TrueType font)
     bool custom_textures = false;  // load HD replacement textures from <data>/textures/load/
+    // Mods page:
+    std::vector<ModSummary> mods;
+    int selected_mod = 0;
+    std::string action_mod_id;
+    std::string action_cfg_key;
+    int action_cfg_dir = 0;
+    bool action_mod_enable = false;
 };
 
-enum class MenuResult { None, Changed, Quit, SaveState, LoadState, Continue };
+enum class MenuResult { None, Changed, Quit, SaveState, LoadState, Continue, ToggleMod, StepModConfig, ReloadMods };
 
 class Menu {
 public:
     bool open = false;
-    int page = 0;  // 0 Settings, 1 Save states
+    int page = 0;  // 0 Settings, 1 Save states, 2 Mods
     int selected = 0;
+    int selected_mod = 0;
 
     MenuResult key(SDL_Scancode key, MenuState& s);
     // A click at window pixel (x, y); a click beside the panel closes it.
@@ -74,13 +83,29 @@ private:
         Rect label_at;
         std::vector<Rect> chips;
     };
+    struct ModRowGeom {
+        Rect select_rect;
+        Rect toggle_rect;
+    };
+    struct ModCfgGeom {
+        std::string key;
+        Rect label_rect;
+        Rect minus_rect;
+        Rect value_rect;
+        Rect plus_rect;
+    };
     struct Geometry {
         Rect panel;
-        std::array<Rect, 2> tabs;
+        std::array<Rect, 3> tabs;
         std::vector<Row> rows;                  // Settings
         std::array<Rect, kStateSlots> cards{};  // Save states: each slot's card, its picture, the save/load buttons
         std::array<Rect, kStateSlots> thumbs{};
         std::array<Rect, 2> buttons{};
+        // Mods page:
+        std::vector<ModRowGeom> mod_rows;
+        std::vector<ModCfgGeom> mod_cfgs;
+        Rect mod_info_rect;
+        Rect mod_reload_btn;
     };
     static Geometry geometry(const MenuState& s, float win_w, float win_h, float ui);
     static Rect panel(float win_w, float win_h, float ui);

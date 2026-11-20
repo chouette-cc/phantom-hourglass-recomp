@@ -1,0 +1,8 @@
+{
+  "id": "com.phrecomp.test.consumer",
+  "name": "Test Consumer Mod",
+  "version": "1.0.0",
+  "author": "TestSuite",
+  "description": "Native C++ mod importing TestMathService and hooking ARM9 functions.",
+  "runtime": "ph.native@1.0"
+}
