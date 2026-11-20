@@ -29,5 +29,7 @@ extern std::atomic<int> compute;           // the compute renderer asked for (1)
 extern std::atomic<bool> compute_failed;   // the compute renderer cannot run on this phone (the OpenGL one does)
 extern std::atomic<int> fixes;             // the 3D fixes asked for (bits: 1 fewer seams, 2 stable textures); -1: no change
 extern std::atomic<int> wide_mode;         // widescreen asked for (0 off, 1 16:9, 2 21:9); -1: no change
+extern std::atomic<bool> reload_mods;      // hot-reload all Lua mods from <data-dir>/mods/
+extern std::atomic<int> loaded_mod_count;  // number of active loaded mods (for Android menu)
 
 }  // namespace ph::pad

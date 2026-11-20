@@ -181,7 +181,14 @@ RuntimeImpl::~RuntimeImpl() {
 }
 
 void RuntimeImpl::build_function_index(const GameCode& code) {
-    for (size_t i = 0; i < code.function_count; i++) functions_[code.functions[i].addr].push_back(&code.functions[i]);
+    for (size_t i = 0; i < code.function_count; i++) {
+        const NtrFuncEntry& e = code.functions[i];
+        functions_[e.addr].push_back(&e);
+        if (e.name && e.name[0]) {
+            symbols_by_name_.emplace(e.name, e.addr);
+            symbol_names_.emplace(e.addr & ~1u, e.name);
+        }
+    }
     for (size_t i = 0; i < code.overlay_count; i++) {
         const NtrOverlayInfo& ov = code.overlays[i];
         if (ov.id >= overlays_by_id_.size()) overlays_by_id_.resize(ov.id + 1, nullptr);
@@ -1043,12 +1050,302 @@ void RuntimeImpl::touch(int x, int y) {
 }
 void RuntimeImpl::release_touch() { touch_x_ = touch_y_ = -1; }
 
-uint32_t RuntimeImpl::peek32(uint32_t a) const {
+namespace {
+
+// Side-effect-free peek of common DS I/O registers (0x04000000-0x04001FFF) for mods and hooks.
+bool peek_io32(const melonDS::NDS& n, uint32_t a, uint32_t& out) {
+    switch (a & ~3u) {
+        case 0x04000000u: out = n.GPU.GPU2D_A.DispCnt; return true;
+        case 0x04000004u: out = uint32_t(n.GPU.DispStat[0]) | (uint32_t(n.GPU.VCount) << 16); return true;
+        case 0x04000008u: out = uint32_t(n.GPU.GPU2D_A.BGCnt[0]) | (uint32_t(n.GPU.GPU2D_A.BGCnt[1]) << 16); return true;
+        case 0x0400000Cu: out = uint32_t(n.GPU.GPU2D_A.BGCnt[2]) | (uint32_t(n.GPU.GPU2D_A.BGCnt[3]) << 16); return true;
+        case 0x04000060u: out = n.GPU.GPU3D.RenderDispCnt; return true;
+        case 0x0400006Cu: out = n.GPU.MasterBrightnessA; return true;
+        case 0x04000130u: out = n.KeyInput & 0xFFFFu; return true;
+        case 0x04000304u: out = uint32_t(n.PowerControl9) | (n.GPU.ScreenSwap ? 0x8000u : 0u); return true;
+        case 0x04001000u: out = n.GPU.GPU2D_B.DispCnt; return true;
+        case 0x04001008u: out = uint32_t(n.GPU.GPU2D_B.BGCnt[0]) | (uint32_t(n.GPU.GPU2D_B.BGCnt[1]) << 16); return true;
+        case 0x0400100Cu: out = uint32_t(n.GPU.GPU2D_B.BGCnt[2]) | (uint32_t(n.GPU.GPU2D_B.BGCnt[3]) << 16); return true;
+        case 0x0400106Cu: out = n.GPU.MasterBrightnessB; return true;
+        default: return false;
+    }
+}
+
+}  // namespace
+
+uint8_t RuntimeImpl::peek8(uint32_t a) const {
     const size_t page = a >> 12;
-    if (page >= read_pages_.size() || !read_pages_[page]) return 0;
-    u32 v;
-    std::memcpy(&v, read_pages_[page] + (a & 0xFFCu), 4);
-    return v;
+    if (page < read_pages_.size() && read_pages_[page]) return read_pages_[page][a & 0xFFFu];
+    if (nds) {
+        if (a >= 0x05000000u && a < 0x05000800u) return nds->GPU.Palette[a & 0x7FFu];
+        if (a >= 0x07000000u && a < 0x07000800u) return nds->GPU.OAM[a & 0x7FFu];
+        uint32_t io = 0;
+        if (a >= 0x04000000u && a < 0x04002000u && peek_io32(*nds, a, io))
+            return uint8_t((io >> (8u * (a & 3u))) & 0xFFu);
+    }
+    return 0;
+}
+
+uint16_t RuntimeImpl::peek16(uint32_t a) const {
+    a &= ~1u;
+    const size_t page = a >> 12;
+    if (page < read_pages_.size() && read_pages_[page]) {
+        uint16_t v;
+        std::memcpy(&v, read_pages_[page] + (a & 0xFFEu), 2);
+        return v;
+    }
+    if (nds) {
+        if (a >= 0x05000000u && a < 0x05000800u) {
+            uint16_t v;
+            std::memcpy(&v, nds->GPU.Palette + (a & 0x7FEu), 2);
+            return v;
+        }
+        if (a >= 0x07000000u && a < 0x07000800u) {
+            uint16_t v;
+            std::memcpy(&v, nds->GPU.OAM + (a & 0x7FEu), 2);
+            return v;
+        }
+        uint32_t io = 0;
+        if (a >= 0x04000000u && a < 0x04002000u && peek_io32(*nds, a, io))
+            return uint16_t((io >> (8u * (a & 2u))) & 0xFFFFu);
+    }
+    return 0;
+}
+
+uint32_t RuntimeImpl::peek32(uint32_t a) const {
+    a &= ~3u;
+    const size_t page = a >> 12;
+    if (page < read_pages_.size() && read_pages_[page]) {
+        u32 v;
+        std::memcpy(&v, read_pages_[page] + (a & 0xFFCu), 4);
+        return v;
+    }
+    if (nds) {
+        if (a >= 0x05000000u && a < 0x05000800u) {
+            u32 v;
+            std::memcpy(&v, nds->GPU.Palette + (a & 0x7FCu), 4);
+            return v;
+        }
+        if (a >= 0x07000000u && a < 0x07000800u) {
+            u32 v;
+            std::memcpy(&v, nds->GPU.OAM + (a & 0x7FCu), 4);
+            return v;
+        }
+        uint32_t io = 0;
+        if (a >= 0x04000000u && a < 0x04002000u && peek_io32(*nds, a, io)) return io;
+    }
+    return 0;
+}
+
+bool RuntimeImpl::poke8(uint32_t a, uint8_t v) {
+    const size_t page = a >> 12;
+    if (page >= write_pages_.size() || !write_pages_[page]) return false;
+    write_pages_[page][a & 0xFFFu] = v;
+    return true;
+}
+
+bool RuntimeImpl::poke16(uint32_t a, uint16_t v) {
+    a &= ~1u;
+    const size_t page = a >> 12;
+    if (page >= write_pages_.size() || !write_pages_[page]) return false;
+    std::memcpy(write_pages_[page] + (a & 0xFFEu), &v, 2);
+    return true;
+}
+
+bool RuntimeImpl::poke32(uint32_t a, uint32_t v) {
+    a &= ~3u;
+    const size_t page = a >> 12;
+    if (page >= write_pages_.size() || !write_pages_[page]) return false;
+    std::memcpy(write_pages_[page] + (a & 0xFFCu), &v, 4);
+    return true;
+}
+
+size_t RuntimeImpl::read_mem(uint32_t a, uint8_t* out, size_t size) const {
+    if (!out || size == 0) return 0;
+    size_t done = 0;
+    while (done < size) {
+        const uint32_t cur = a + uint32_t(done);
+        const size_t page = cur >> 12;
+        if (page < read_pages_.size() && read_pages_[page]) {
+            const size_t off = cur & 0xFFFu;
+            const size_t chunk = std::min(size - done, size_t(0x1000u) - off);
+            std::memcpy(out + done, read_pages_[page] + off, chunk);
+            done += chunk;
+        } else if (nds && cur >= 0x05000000u && cur < 0x05000800u) {
+            const size_t off = cur & 0x7FFu;
+            const size_t chunk = std::min(size - done, size_t(0x800u) - off);
+            std::memcpy(out + done, nds->GPU.Palette + off, chunk);
+            done += chunk;
+        } else if (nds && cur >= 0x07000000u && cur < 0x07000800u) {
+            const size_t off = cur & 0x7FFu;
+            const size_t chunk = std::min(size - done, size_t(0x800u) - off);
+            std::memcpy(out + done, nds->GPU.OAM + off, chunk);
+            done += chunk;
+        } else {
+            break;
+        }
+    }
+    return done;
+}
+
+size_t RuntimeImpl::write_mem(uint32_t a, const uint8_t* data, size_t size) {
+    if (!data || size == 0) return 0;
+    size_t done = 0;
+    while (done < size) {
+        const uint32_t cur = a + uint32_t(done);
+        const size_t page = cur >> 12;
+        if (page >= write_pages_.size() || !write_pages_[page]) break;
+        const size_t off = cur & 0xFFFu;
+        const size_t chunk = std::min(size - done, size_t(0x1000u) - off);
+        std::memcpy(write_pages_[page] + off, data + done, chunk);
+        done += chunk;
+    }
+    return done;
+}
+
+size_t RuntimeImpl::read_rom(uint32_t offset, uint8_t* out, size_t size) const {
+    if (!nds || !out || size == 0) return 0;
+    const auto* cart = nds->NDSCartSlot.GetCart();
+    if (!cart || !cart->GetROM()) return 0;
+    const uint32_t len = cart->GetROMLength();
+    if (offset >= len) return 0;
+    const size_t n = std::min(size, size_t(len - offset));
+    std::memcpy(out, cart->GetROM() + offset, n);
+    return n;
+}
+
+Runtime::DisplayInfo RuntimeImpl::display_info() const {
+    DisplayInfo info;
+    if (!nds) return info;
+    info.powcnt1 = uint32_t(nds->PowerControl9) | (nds->GPU.ScreenSwap ? 0x8000u : 0u);
+    info.dispcnt_a = nds->GPU.GPU2D_A.DispCnt;
+    info.dispcnt_b = nds->GPU.GPU2D_B.DispCnt;
+    info.master_bright_a = nds->GPU.MasterBrightnessA;
+    info.master_bright_b = nds->GPU.MasterBrightnessB;
+    info.disp3dcnt = nds->GPU.GPU3D.RenderDispCnt;
+    info.screen_swap = nds->GPU.ScreenSwap;
+    info.screens_enabled = nds->GPU.ScreensEnabled;
+    info.lid_closed = nds->IsLidClosed();
+    info.new_3d_frame = !nds->GPU.GPU3D.RenderFrameIdentical;
+    return info;
+}
+
+uint32_t RuntimeImpl::resolve_symbol(const char* name) const {
+    if (!name || !name[0]) return 0;
+    const auto it = symbols_by_name_.find(name);
+    return it == symbols_by_name_.end() ? 0 : it->second;
+}
+
+const char* RuntimeImpl::symbol_name(uint32_t addr) const {
+    const auto it = symbol_names_.find(addr & ~1u);
+    return it == symbol_names_.end() ? nullptr : it->second;
+}
+
+void RuntimeImpl::rebuild_hook_bloom() {
+    hook_bloom_.fill(0);
+    hooks_by_addr_.clear();
+    for (const InstalledHook& h : hooks_) {
+        hooks_by_addr_[h.addr].push_back(h);
+        hook_bloom_[(h.addr >> 5) & 0xFFFu] |= uint8_t(1u << ((h.addr >> 2) & 7u));
+    }
+    for (auto& [a, vec] : hooks_by_addr_) {
+        std::stable_sort(vec.begin(), vec.end(),
+                         [](const InstalledHook& x, const InstalledHook& y) { return x.priority < y.priority; });
+    }
+    cpu.hook_bloom = hooks_.empty() ? nullptr : hook_bloom_.data();
+}
+
+uint64_t RuntimeImpl::add_function_hook(uint32_t addr, HookKind kind, FunctionHookCallback cb, void* userdata,
+                                        int priority) {
+    if (!addr || !cb) return 0;
+    const uint64_t handle = next_hook_handle_++;
+    hooks_.push_back({handle, addr & ~1u, kind, cb, userdata, priority});
+    rebuild_hook_bloom();
+    return handle;
+}
+
+bool RuntimeImpl::remove_function_hook(uint64_t handle) {
+    const auto it = std::find_if(hooks_.begin(), hooks_.end(),
+                                 [handle](const InstalledHook& h) { return h.handle == handle; });
+    if (it == hooks_.end()) return false;
+    hooks_.erase(it);
+    rebuild_hook_bloom();
+    return true;
+}
+
+void RuntimeImpl::clear_function_hooks() {
+    if (hooks_.empty()) return;
+    hooks_.clear();
+    rebuild_hook_bloom();
+}
+
+int RuntimeImpl::hook_dispatch(uint32_t addr, NtrFunc orig) {
+    const u32 aligned = addr & ~1u;
+    for (auto it = bypass_orig_stack_.rbegin(); it != bypass_orig_stack_.rend(); ++it) {
+        if (it->first == current_fiber_ && it->second == aligned) return 0;
+    }
+    const auto it = hooks_by_addr_.find(aligned);
+    if (it == hooks_by_addr_.end() || it->second.empty()) return 0;
+
+    // Copy snapshot so hooks may safely add/remove hooks during execution.
+    const std::vector<InstalledHook> list = it->second;
+    bool skip_orig = false;
+    const InstalledHook* replace_hook = nullptr;
+    for (const InstalledHook& h : list) {
+        if (h.kind == HookKind::Pre) {
+            if (h.cb(&cpu, addr, h.userdata) == HookAction::SkipOriginal) skip_orig = true;
+        } else if (h.kind == HookKind::Replace) {
+            replace_hook = &h;  // highest priority (sorted ascending -> last wins)
+        }
+    }
+
+    if (!skip_orig) {
+        if (replace_hook) {
+            active_orig_stack_.push_back({replace_hook->handle, aligned, current_fiber_, orig});
+            replace_hook->cb(&cpu, addr, replace_hook->userdata);
+            active_orig_stack_.pop_back();
+        } else if (orig) {
+            bypass_orig_stack_.push_back({current_fiber_, aligned});
+            orig(&cpu);
+            bypass_orig_stack_.pop_back();
+        }
+    }
+
+    for (const InstalledHook& h : list) {
+        if (h.kind == HookKind::Post) h.cb(&cpu, addr, h.userdata);
+    }
+    return 1;
+}
+
+bool RuntimeImpl::call_hook_original(uint64_t handle, NtrCpu* c) {
+    for (auto it = active_orig_stack_.rbegin(); it != active_orig_stack_.rend(); ++it) {
+        if (it->handle == handle && it->orig) {
+            bypass_orig_stack_.push_back({it->fiber, it->addr});
+            it->orig(c ? c : &cpu);
+            bypass_orig_stack_.pop_back();
+            return true;
+        }
+    }
+    return false;
+}
+
+bool RuntimeImpl::call_guest_function(uint32_t addr, uint32_t r0, uint32_t r1, uint32_t r2, uint32_t r3,
+                                      uint32_t* out_r0) {
+    if (!addr || !lookup(addr)) return false;
+    const u32 saved_r0 = cpu.r[0], saved_r1 = cpu.r[1], saved_r2 = cpu.r[2], saved_r3 = cpu.r[3];
+    const u32 saved_r12 = cpu.r[12];
+    cpu.r[0] = r0;
+    cpu.r[1] = r1;
+    cpu.r[2] = r2;
+    cpu.r[3] = r3;
+    call_guest(addr);
+    if (out_r0) *out_r0 = cpu.r[0];
+    cpu.r[0] = saved_r0;
+    cpu.r[1] = saved_r1;
+    cpu.r[2] = saved_r2;
+    cpu.r[3] = saved_r3;
+    cpu.r[12] = saved_r12;
+    return true;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1083,6 +1380,7 @@ void ntr_trace_enter(NtrCpu* c, uint32_t addr) {
     g_entries[g_entry_pos++ % 64] = {(rt(c).current_token() - kFiberTokenBase) >> 2, addr, c->r[14], c->r[13]};
     rt(c).note_entry(addr);
 }
+int ntr_hook_dispatch(NtrCpu* c, uint32_t addr, NtrFunc orig) { return rt(c).hook_dispatch(addr, orig); }
 
 uint32_t ntr_read32_slow(NtrCpu* c, uint32_t a) { return rt(c).bus_read32(a); }
 uint32_t ntr_read16_slow(NtrCpu* c, uint32_t a) { return rt(c).bus_read16(a); }

@@ -36,6 +36,10 @@ and sound hardware) comes from the [melonDS](https://github.com/melonDS-emu/melo
 - **Save and resume**: 12 save-state slots with screenshots, separate from the game's own `.sav` save. Continue resumes
   after quitting or returning from the phone background; existing game saves remain in place.
 - **Convenience features**: FPS counter, side menus on both platforms, PC fullscreen and screenshots, and fast-forward.
+- **Mod system**: Dusklight-inspired `.phmod` bundle & folder loader supporting three mod tiers — asset-only
+  (`overlay/` NitroFS overrides & RAM/ROM patches), native C/C++ mods via versioned services & ARM9 function hooking
+  (`sdk/include/ph_mods/`), and sandboxed cross-platform Lua 5.4 script mods with custom screen composition, touch
+  regions, live settings, and `F6` hot-reload ([docs/MODDING.md](docs/MODDING.md)).
 
 ## Pictures
 
@@ -193,6 +197,7 @@ workspace and the tools folder.
 | **C** (hold) | close the DS's lid |
 | **F1** or Esc | the menu: screen, renderer and resolution, picture, FPS counter, fullscreen, save states, quit |
 | **F5** / **F8** | save a state to the chosen slot / load it |
+| **F6** | hot-reload mods from `data/mods/` |
 | **F9** | continue from where you quit |
 | Tab / F2 | the other screen / both screens |
 | F3 / F4 / F11 / F12 | sharp or smooth / FPS counter / fullscreen / screenshot |

@@ -7,6 +7,8 @@ def repo = projectDir.parentFile.parentFile
 def slashes = { String p -> p.replace('\\', '/') }  // (CMake reads backslashes as escapes)
 def generated = slashes(project.findProperty('phGeneratedDir') ?: new File(repo, 'build/release/recomp_generated').path)
 def sdlSource = slashes(project.findProperty('phSdlSource') ?: new File(repo, 'build/release/_deps/sdl3-src').path)
+def luaSource = slashes(project.findProperty('phLuaSource') ?: new File(repo, 'build/release/_deps/lua-src').path)
+def minizSource = slashes(project.findProperty('phMinizSource') ?: new File(repo, 'build/release/_deps/miniz-src').path)
 // The CMake that local.properties' cmake.dir points at (5-BUILD-ANDROID.ps1 passes its version): the project needs 3.28+.
 def cmakeVersion = project.findProperty('phCmakeVersion') ?: '3.31.6'
 def ninja = project.findProperty('phNinja')
@@ -25,7 +27,9 @@ android {
             cmake {
                 arguments "-DANDROID_STL=c++_static", "-DANDROID_PLATFORM=android-26",
                         "-DFFCC_BUILD_TESTS=OFF", "-DPH_GENERATED_DIR=${generated}",
-                        "-DFETCHCONTENT_SOURCE_DIR_SDL3=${sdlSource}", "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
+                        "-DFETCHCONTENT_SOURCE_DIR_SDL3=${sdlSource}",
+                        "-DFETCHCONTENT_SOURCE_DIR_LUA=${luaSource}",
+                        "-DFETCHCONTENT_SOURCE_DIR_MINIZ=${minizSource}", "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
                 if (ninja) arguments "-DCMAKE_MAKE_PROGRAM=${slashes(ninja)}"
                 abiFilters 'arm64-v8a'
                 targets 'main', 'ph_game'

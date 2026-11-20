@@ -32,7 +32,9 @@ Menu::Geometry Menu::geometry(const MenuState& s, float win_w, float win_h, floa
     const float pad = 16 * ui, text = 16 * ui, chip_h = 36 * ui, gap = 6 * ui;
     float y = pad + text * 2.2f;
     const float half = (p.w - 2 * pad - gap) / 2;
-    g.tabs = {Rect{p.x + pad, y, half, chip_h}, Rect{p.x + pad + half + gap, y, half, chip_h}};
+    const float third = (p.w - 2 * pad - 2 * gap) / 3;
+    g.tabs = {Rect{p.x + pad, y, third, chip_h}, Rect{p.x + pad + third + gap, y, third, chip_h},
+              Rect{p.x + pad + 2 * (third + gap), y, third, chip_h}};
     y += chip_h + 18 * ui;
 
     // Settings: each row's label over its line of chips.
@@ -94,6 +96,46 @@ Menu::Geometry Menu::geometry(const MenuState& s, float win_w, float win_h, floa
     }
     const float by = y + float((kStateSlots + kColumns - 1) / kColumns) * (ch + gap) + 12 * ui;
     g.buttons = {Rect{p.x + pad, by, half, chip_h + 6 * ui}, Rect{p.x + pad + half + gap, by, half, chip_h + 6 * ui}};
+
+    // Mods page: list of discovered mods, selected mod's config items, and Reload button at the bottom.
+    const float reload_h = chip_h + 2 * ui;
+    const float small_h = 12 * ui;
+    g.mod_reload_btn = {p.x + pad, win_h - pad - small_h * 2.2f - reload_h, p.w - 2 * pad, reload_h};
+    float my = y;
+    const float row_h = 32 * ui;
+    const float toggle_w = 56 * ui;
+    const float list_limit = g.mod_reload_btn.y - 12 * ui;
+    for (size_t i = 0; i < s.mods.size() && my + row_h <= list_limit; i++) {
+        g.mod_rows.push_back({{p.x + pad, my, p.w - 2 * pad - toggle_w - gap, row_h},
+                              {p.x + p.w - pad - toggle_w, my, toggle_w, row_h}});
+        my += row_h + gap;
+    }
+    if (!s.mods.empty()) {
+        const int idx = std::clamp(s.selected_mod, 0, int(s.mods.size()) - 1);
+        const ModSummary& mod = s.mods[size_t(idx)];
+        my += 6 * ui;
+        g.mod_info_rect = {p.x + pad, my, p.w - 2 * pad, 28 * ui};
+        my += 32 * ui;
+        const float btn_w = 30 * ui;
+        const float ctrl_w = (p.w - 2 * pad) * 0.48f;
+        const float lbl_w = (p.w - 2 * pad) - ctrl_w - gap;
+        for (const ModConfigItem& cfg : mod.config) {
+            if (my + row_h > list_limit) break;
+            const float cx = p.x + pad + lbl_w + gap;
+            ModCfgGeom cg;
+            cg.key = cfg.key;
+            cg.label_rect = {p.x + pad, my, lbl_w, row_h};
+            if (cfg.kind == ModConfigItem::Kind::Bool) {
+                cg.value_rect = {cx, my, ctrl_w, row_h};
+            } else {
+                cg.minus_rect = {cx, my, btn_w, row_h};
+                cg.value_rect = {cx + btn_w + 4 * ui, my, std::max(20 * ui, ctrl_w - 2 * btn_w - 8 * ui), row_h};
+                cg.plus_rect = {cx + ctrl_w - btn_w, my, btn_w, row_h};
+            }
+            g.mod_cfgs.push_back(std::move(cg));
+            my += row_h + gap;
+        }
+    }
     return g;
 }
 
@@ -142,7 +184,24 @@ MenuResult Menu::key(SDL_Scancode key, MenuState& s) {
         return MenuResult::None;
     }
     if (key == SDL_SCANCODE_TAB) {
-        page ^= 1;
+        page = (page + 1) % 3;
+        return MenuResult::None;
+    }
+    if (page == 2) {  // Mods: Up/Down selects mod, Space/Enter toggles it, R reloads all mods
+        if (key == SDL_SCANCODE_R || key == SDL_SCANCODE_F6) return MenuResult::ReloadMods;
+        if (!s.mods.empty()) {
+            const int n = int(s.mods.size());
+            selected_mod = std::clamp(selected_mod, 0, n - 1);
+            if (key == SDL_SCANCODE_UP) selected_mod = (selected_mod + n - 1) % n;
+            if (key == SDL_SCANCODE_DOWN) selected_mod = (selected_mod + 1) % n;
+            s.selected_mod = selected_mod;
+            if (key == SDL_SCANCODE_RETURN || key == SDL_SCANCODE_SPACE) {
+                const ModSummary& m = s.mods[size_t(selected_mod)];
+                s.action_mod_id = m.id;
+                s.action_mod_enable = !m.enabled;
+                return MenuResult::ToggleMod;
+            }
+        }
         return MenuResult::None;
     }
     if (page == 1) {  // arrows choose the slot; S saves to it, L (or Enter) loads it
@@ -183,16 +242,54 @@ MenuResult Menu::key(SDL_Scancode key, MenuState& s) {
 }
 
 MenuResult Menu::click(float x, float y, float win_w, float win_h, float ui, MenuState& s) {
+    s.selected_mod = selected_mod;
     const Geometry g = geometry(s, win_w, win_h, ui);
     if (!g.panel.contains(x, y)) {
         open = false;
         return MenuResult::None;
     }
-    for (int t = 0; t < 2; t++)
+    for (int t = 0; t < 3; t++)
         if (g.tabs[size_t(t)].contains(x, y)) {
             page = t;
             return MenuResult::None;
         }
+    if (page == 2) {
+        if (g.mod_reload_btn.contains(x, y)) return MenuResult::ReloadMods;
+        for (size_t i = 0; i < g.mod_rows.size() && i < s.mods.size(); i++) {
+            if (g.mod_rows[i].toggle_rect.contains(x, y)) {
+                selected_mod = int(i);
+                s.selected_mod = selected_mod;
+                s.action_mod_id = s.mods[i].id;
+                s.action_mod_enable = !s.mods[i].enabled;
+                return MenuResult::ToggleMod;
+            }
+            if (g.mod_rows[i].select_rect.contains(x, y)) {
+                selected_mod = int(i);
+                s.selected_mod = selected_mod;
+                return MenuResult::None;
+            }
+        }
+        if (!s.mods.empty()) {
+            const int idx = std::clamp(selected_mod, 0, int(s.mods.size()) - 1);
+            const ModSummary& m = s.mods[size_t(idx)];
+            for (const ModCfgGeom& cg : g.mod_cfgs) {
+                if (cg.minus_rect.w > 0 && cg.minus_rect.contains(x, y)) {
+                    s.action_mod_id = m.id;
+                    s.action_cfg_key = cg.key;
+                    s.action_cfg_dir = -1;
+                    return MenuResult::StepModConfig;
+                }
+                if ((cg.plus_rect.w > 0 && cg.plus_rect.contains(x, y)) ||
+                    (cg.minus_rect.w <= 0 && cg.value_rect.contains(x, y))) {
+                    s.action_mod_id = m.id;
+                    s.action_cfg_key = cg.key;
+                    s.action_cfg_dir = 1;
+                    return MenuResult::StepModConfig;
+                }
+            }
+        }
+        return MenuResult::None;
+    }
     if (page == 1) {
         for (int i = 0; i < kStateSlots; i++)
             if (g.cards[size_t(i)].contains(x, y)) {
@@ -233,7 +330,68 @@ void Menu::draw_panel(GlPresenter& gl, const MenuState& s, float win_w, float wi
     const float small = 8 * ui * 1.5f;
     gl.text(p.x + p.w - pad - small * float(std::string(rate).size()), pad + text * 0.3f, small, rate, kHint);
     chip(gl, g.tabs[0], "Settings", page == 0, true, text, ui);
-    chip(gl, g.tabs[1], "Save states", page == 1, true, text, ui);
+    chip(gl, g.tabs[1], "States", page == 1, true, text, ui);
+    chip(gl, g.tabs[2], "Mods", page == 2, true, text, ui);
+
+    if (page == 2) {
+        if (s.mods.empty()) {
+            gl.text(p.x + pad, g.tabs[0].y + g.tabs[0].h + 28 * ui, text, "No mods found.", kWhite);
+            gl.text(p.x + pad, g.tabs[0].y + g.tabs[0].h + 54 * ui, small, "Place mod folders in data/mods/", kHint);
+            gl.text(p.x + pad, g.tabs[0].y + g.tabs[0].h + 72 * ui, small, "with a mod.json file (docs/MODDING.md).", kHint);
+        } else {
+            const int sel = std::clamp(selected_mod, 0, int(s.mods.size()) - 1);
+            for (size_t i = 0; i < g.mod_rows.size() && i < s.mods.size(); i++) {
+                const ModSummary& m = s.mods[i];
+                const Rect& sr = g.mod_rows[i].select_rect;
+                const Rect& tr = g.mod_rows[i].toggle_rect;
+                const bool is_sel = int(i) == sel;
+                gl.fill(sr, is_sel ? 0xFF343C52 : kRow);
+                if (is_sel) gl.fill({sr.x - 6 * ui, sr.y, 3 * ui, sr.h}, kAccent);
+                std::string label = m.name + " v" + m.version;
+                if (!m.error.empty()) label += " [!]";
+                const float lsz = std::min(text * 0.9f, (sr.w - 10 * ui) / float(std::max<size_t>(label.size(), 1)));
+                gl.text(sr.x + 6 * ui, sr.y + (sr.h - lsz) / 2, lsz, label, !m.error.empty() ? 0xFFFF8888 : kWhite);
+                chip(gl, tr, m.enabled ? "ON" : "OFF", m.enabled && m.loaded, true, text * 0.9f, ui);
+            }
+            const ModSummary& cur = s.mods[size_t(sel)];
+            if (g.mod_info_rect.h > 0) {
+                std::string info = !cur.error.empty() ? ("Error: " + cur.error)
+                                                      : (cur.description.empty() ? cur.id : cur.description);
+                const float isz = std::min(small, (g.mod_info_rect.w - 4 * ui) / float(std::max<size_t>(info.size(), 1)));
+                gl.text(g.mod_info_rect.x, g.mod_info_rect.y, isz, info, !cur.error.empty() ? 0xFFFF8888 : kHint);
+                const char* kind_tag = cur.kind == ModKind::Native ? "[C++ Native]"
+                                       : cur.kind == ModKind::Lua ? "[Lua]" : "[Asset]";
+                std::string meta = std::string(kind_tag) + (cur.author.empty() ? "" : (" by " + cur.author)) +
+                                   (cur.has_overlay ? " [overlay]" : "");
+                gl.text(g.mod_info_rect.x, g.mod_info_rect.y + small + 4 * ui, small * 0.9f, meta, kAccent);
+            }
+            for (size_t i = 0; i < g.mod_cfgs.size() && i < cur.config.size(); i++) {
+                const ModCfgGeom& cg = g.mod_cfgs[i];
+                const ModConfigItem& ci = cur.config[i];
+                const float lsz = std::min(small * 1.1f, (cg.label_rect.w - 4 * ui) / float(std::max<size_t>(ci.label.size(), 1)));
+                gl.text(cg.label_rect.x, cg.label_rect.y + (cg.label_rect.h - lsz) / 2, lsz, ci.label, kWhite);
+                if (ci.kind == ModConfigItem::Kind::Bool) {
+                    chip(gl, cg.value_rect, ci.bool_val ? "On" : "Off", ci.bool_val, true, text * 0.9f, ui);
+                } else {
+                    std::string val;
+                    if (ci.kind == ModConfigItem::Kind::Int) val = std::to_string(ci.int_val);
+                    else if (ci.kind == ModConfigItem::Kind::Float) {
+                        char buf[32];
+                        std::snprintf(buf, sizeof buf, "%.2f", ci.float_val);
+                        val = buf;
+                    } else if (ci.kind == ModConfigItem::Kind::Choice && !ci.choices.empty()) {
+                        val = ci.choices[size_t(std::clamp<int64_t>(ci.int_val, 0, int64_t(ci.choices.size()) - 1))];
+                    }
+                    chip(gl, cg.minus_rect, "<", false, true, text * 0.9f, ui);
+                    chip(gl, cg.value_rect, val, false, true, text * 0.85f, ui);
+                    chip(gl, cg.plus_rect, ">", false, true, text * 0.9f, ui);
+                }
+            }
+        }
+        chip(gl, g.mod_reload_btn, "Reload mods (F6)", false, true, text, ui);
+        gl.text(p.x + pad, win_h - pad - small, small, "Up/Down: select. Enter: toggle. R/F6: reload. Tab: page.", kHint);
+        return;
+    }
 
     if (page == 1) {
         const float label = 10 * ui;

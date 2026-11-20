@@ -32,7 +32,10 @@ void main() {
 }
 )";
 
-// uMode 0: a DS screen (a layer of the screens' array texture); 1: a filled box; 2: text (the font's coverage).
+// uMode 0: a DS screen (a layer of the screens' array texture), multiplied by uColor;
+//       1: a filled box;
+//       2: text (the font's coverage in uFont.r);
+//       3: a custom RGBA image texture bound to uFont, multiplied by uColor.
 // uSwap: the texture holds the software renderer's BGRA bytes uploaded as RGBA (ES has no GL_BGRA uploads).
 const char* kFragment = R"(
 in vec2 vUV;
@@ -46,10 +49,14 @@ uniform int uSwap;
 void main() {
     if (uMode == 0) {
         vec3 c = texture(uTex, vec3(vUV, uLayer)).rgb;
-        oColor = vec4(uSwap == 1 ? c.bgr : c, 1.0);
+        oColor = vec4((uSwap == 1 ? c.bgr : c) * uColor.rgb, uColor.a);
     }
     else if (uMode == 1) oColor = uColor;
-    else oColor = vec4(uColor.rgb, uColor.a * texture(uFont, vUV).r);
+    else if (uMode == 2) oColor = vec4(uColor.rgb, uColor.a * texture(uFont, vUV).r);
+    else {
+        vec4 t = texture(uFont, vUV);
+        oColor = vec4(t.rgb * uColor.rgb, t.a * uColor.a);
+    }
 }
 )";
 
@@ -186,6 +193,7 @@ bool GlPresenter::init(SDL_Window* window, std::string& error) {
 
 void GlPresenter::shutdown() {
     if (!context_) return;
+    clear_mod_images();
     glDeleteFramebuffers(1, &read_fbo_);
     glDeleteTextures(1, &soft_tex_);
     glDeleteTextures(1, &thumb_tex_);
@@ -232,6 +240,12 @@ void GlPresenter::quad(const Rect& r, float u0, float v0, float u1, float v1) {
 }
 
 void GlPresenter::screen(const ntr::Frame& frame, int layer, const Rect& where, bool smooth, bool wide) {
+    screen_ex(frame, layer, where, 0.0f, 0.0f, 1.0f, 1.0f, smooth, wide, 1.0f, 0xFFFFFFFFu);
+}
+
+void GlPresenter::screen_ex(const ntr::Frame& frame, int layer, const Rect& where, float u0, float v0, float u1, float v1,
+                            bool smooth, bool wide, float alpha, uint32_t tint_argb) {
+    if (layer < 0 || layer > 1 || where.w <= 0.0f || where.h <= 0.0f || alpha <= 0.0f) return;
     glActiveTexture(GL_TEXTURE0);
     if (frame.top && frame.bottom) {
         glBindTexture(GL_TEXTURE_2D_ARRAY, soft_tex_);
@@ -247,25 +261,116 @@ void GlPresenter::screen(const ntr::Frame& frame, int layer, const Rect& where, 
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, f);
     // A widened picture (the GPU renderer's wide_extra) has the screen's 256 pixels in the middle; the wide screen
     // itself is shown whole when asked for (widescreen).
-    float u0 = 0, u1 = 1;
+    float base_u0 = 0.0f, base_u1 = 1.0f;
     if (frame.wide_extra > 0 && !(wide && layer == frame.wide_layer)) {
         const float total = 256.0f + 2.0f * float(frame.wide_extra);
-        u0 = float(frame.wide_extra) / total;
-        u1 = 1 - u0;
+        base_u0 = float(frame.wide_extra) / total;
+        base_u1 = 1.0f - base_u0;
     }
+    const float su0 = base_u0 + (base_u1 - base_u0) * u0;
+    const float su1 = base_u0 + (base_u1 - base_u0) * u1;
+    const float tint_a = float((tint_argb >> 24) & 0xFFu) / 255.0f;
+    const float final_a = std::clamp(alpha * tint_a, 0.0f, 1.0f);
     glUniform1i(u_mode_, 0);
     glUniform1f(u_layer_, float(layer));
+    glUniform4f(u_color_, float((tint_argb >> 16) & 0xFFu) / 255.0f, float((tint_argb >> 8) & 0xFFu) / 255.0f,
+                float(tint_argb & 0xFFu) / 255.0f, final_a);
     glUniform1i(u_swap_, kEs && frame.top && frame.bottom ? 1 : 0);
-    glDisable(GL_BLEND);
-    quad(where, u0, 0, u1, 1);
+    if (final_a >= 0.999f) glDisable(GL_BLEND);
+    else glEnable(GL_BLEND);
+    quad(where, su0, v0, su1, v1);
     glEnable(GL_BLEND);
     glUniform1i(u_swap_, 0);
 }
 
 void GlPresenter::fill(const Rect& where, uint32_t argb) {
+    if (where.w <= 0.0f || where.h <= 0.0f) return;
     glUniform1i(u_mode_, 1);
     set_color(u_color_, argb);
     quad(where, 0, 0, 0, 0);
+}
+
+void GlPresenter::outline(const Rect& where, float thickness, uint32_t argb) {
+    if (where.w <= 0.0f || where.h <= 0.0f || thickness <= 0.0f) return;
+    const float t = std::min(thickness, std::min(where.w, where.h) * 0.5f);
+    fill({where.x, where.y, where.w, t}, argb);
+    fill({where.x, where.y + where.h - t, where.w, t}, argb);
+    fill({where.x, where.y + t, t, where.h - 2.0f * t}, argb);
+    fill({where.x + where.w - t, where.y + t, t, where.h - 2.0f * t}, argb);
+}
+
+void GlPresenter::set_clip(const Rect& where) {
+    const int x = std::max(0, int(where.x));
+    const int y_top = std::max(0, int(where.y));
+    const int x1 = std::min(width_, int(where.x + where.w));
+    const int y1 = std::min(height_, int(where.y + where.h));
+    const int w = std::max(0, x1 - x);
+    const int h = std::max(0, y1 - y_top);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(x, std::max(0, height_ - y_top - h), w, h);
+}
+
+void GlPresenter::clear_clip() { glDisable(GL_SCISSOR_TEST); }
+
+int GlPresenter::create_image(const uint32_t* rgba_pixels, int width, int height, bool smooth) {
+    if (!context_ || !rgba_pixels || width <= 0 || height <= 0 || width > 4096 || height > 4096) return 0;
+    unsigned tex = 0;
+    glGenTextures(1, &tex);
+    if (!tex) return 0;
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba_pixels);
+    const int f = smooth ? GL_LINEAR : GL_NEAREST;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, f);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, f);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glActiveTexture(GL_TEXTURE0);
+    for (size_t i = 0; i < mod_images_.size(); i++) {
+        if (!mod_images_[i].tex) {
+            mod_images_[i] = {tex, width, height};
+            return int(i + 1);
+        }
+    }
+    mod_images_.push_back({tex, width, height});
+    return int(mod_images_.size());
+}
+
+void GlPresenter::destroy_image(int id) {
+    if (id <= 0 || size_t(id) > mod_images_.size()) return;
+    ModImage& img = mod_images_[size_t(id - 1)];
+    if (img.tex) glDeleteTextures(1, &img.tex);
+    img = {};
+}
+
+void GlPresenter::clear_mod_images() {
+    for (ModImage& img : mod_images_)
+        if (img.tex) glDeleteTextures(1, &img.tex);
+    mod_images_.clear();
+}
+
+bool GlPresenter::image_size(int id, int& width, int& height) const {
+    if (id <= 0 || size_t(id) > mod_images_.size() || !mod_images_[size_t(id - 1)].tex) return false;
+    width = mod_images_[size_t(id - 1)].w;
+    height = mod_images_[size_t(id - 1)].h;
+    return true;
+}
+
+void GlPresenter::draw_image(int id, const Rect& where, float u0, float v0, float u1, float v1, float alpha,
+                             uint32_t tint_argb) {
+    if (id <= 0 || size_t(id) > mod_images_.size() || !mod_images_[size_t(id - 1)].tex) return;
+    if (where.w <= 0.0f || where.h <= 0.0f || alpha <= 0.0f) return;
+    const float tint_a = float((tint_argb >> 24) & 0xFFu) / 255.0f;
+    const float final_a = std::clamp(alpha * tint_a, 0.0f, 1.0f);
+    glUniform1i(u_mode_, 3);
+    glUniform4f(u_color_, float((tint_argb >> 16) & 0xFFu) / 255.0f, float((tint_argb >> 8) & 0xFFu) / 255.0f,
+                float(tint_argb & 0xFFu) / 255.0f, final_a);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, mod_images_[size_t(id - 1)].tex);
+    glActiveTexture(GL_TEXTURE0);
+    glEnable(GL_BLEND);
+    quad(where, u0, v0, u1, v1);
 }
 
 float GlPresenter::text(float x, float y, float size, const std::string& s, uint32_t argb) {
@@ -297,6 +402,7 @@ void GlPresenter::thumbnail(int slot, int layer, const Rect& where) {
     glBindTexture(GL_TEXTURE_2D_ARRAY, thumb_tex_);
     glUniform1i(u_mode_, 0);
     glUniform1f(u_layer_, float(slot * 2 + layer));
+    glUniform4f(u_color_, 1.0f, 1.0f, 1.0f, 1.0f);
     glUniform1i(u_swap_, kEs ? 1 : 0);
     quad(where, 0, 0, 1, 1);
     glUniform1i(u_swap_, 0);
@@ -349,6 +455,30 @@ bool GlPresenter::read_screens(const ntr::Frame& frame, std::vector<uint32_t>& o
     return true;
 }
 
+bool GlPresenter::read_backbuffer(std::vector<uint32_t>& out, int& width, int& height) {
+    if (!context_ || width_ <= 0 || height_ <= 0) return false;
+    width = width_;
+    height = height_;
+    std::vector<uint32_t> tmp(size_t(width) * size_t(height));
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glReadPixels(0, 0, width, height, kEs ? GL_RGBA : GL_BGRA, GL_UNSIGNED_BYTE, tmp.data());
+    out.resize(tmp.size());
+    for (int y = 0; y < height; y++) {
+        const uint32_t* src = tmp.data() + size_t(height - 1 - y) * size_t(width);
+        uint32_t* dst = out.data() + size_t(y) * size_t(width);
+        if (kEs) {
+            for (int x = 0; x < width; x++) {
+                const uint32_t p = src[x];
+                dst[x] = 0xFF000000u | ((p & 0xFFu) << 16) | (p & 0xFF00u) | ((p >> 16) & 0xFFu);
+            }
+        } else {
+            for (int x = 0; x < width; x++) dst[x] = 0xFF000000u | (src[x] & 0x00FFFFFFu);
+        }
+    }
+    return true;
+}
+
 void set_gl_attributes() {
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 #ifdef __ANDROID__
@@ -377,6 +507,7 @@ bool GlPresenter::recover(std::string& error) {
     // deleting them in the replacement context, then create a fresh presenter context.
     SDL_GL_MakeCurrent(window_, nullptr);
     context_ = nullptr;
+    mod_images_.clear();
     program_ = vao_ = vbo_ = soft_tex_ = font_tex_ = read_fbo_ = thumb_tex_ = 0;
     checked_frame_texture_ = 0;
     checked_frame_texture_valid_ = true;

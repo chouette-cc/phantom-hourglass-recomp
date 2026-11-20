@@ -37,6 +37,7 @@ struct NtrCpu {
     uint8_t* const* read_pages;  /* host pointer per 4 KiB guest page, NULL = slow path */
     uint8_t* const* write_pages;
     void* runtime;
+    const uint8_t* hook_bloom;   /* 4 KiB bitset of hooked ARM9 addresses; NULL when no mod hooks are installed */
 };
 
 /* One entry per recompiled function. `addr` has bit 0 set for Thumb functions. */
@@ -44,6 +45,7 @@ typedef struct NtrFuncEntry {
     uint32_t addr;
     uint16_t module; /* see NTR_MODULE_* */
     NtrFunc fn;
+    const char* name; /* optional symbol name from functions.txt, NULL if unnamed */
 } NtrFuncEntry;
 
 /* One entry per ARM9 overlay or code region. It is resident when every probe word matches guest memory. */
@@ -66,7 +68,7 @@ typedef struct NtrOverlayInfo {
  * links against nothing. Its one exported function, ntr_game_load, is given the runtime's services and the game's
  * hooks by the host, and returns the tables of recompiled functions. Bump NTR_ABI_VERSION whenever this interface or
  * the generated code's meaning changes: a module built for another version is refused (and rebuilt by setup). */
-#define NTR_ABI_VERSION 1u
+#define NTR_ABI_VERSION 2u
 
 #define NTR_RUNTIME_SERVICES(X) \
     X(uint32_t, read32_slow, (NtrCpu* c, uint32_t addr)) \
@@ -95,7 +97,9 @@ typedef struct NtrOverlayInfo {
     X(void, bad_jump, (NtrCpu* c, uint32_t pc, uint32_t target)) \
     X(void, unimplemented, (NtrCpu* c, uint32_t addr)) \
     /* debug builds of the generated code (NTR_TRACE_ENTRY) record every function entry for the fatal error report */ \
-    X(void, trace_enter, (NtrCpu* c, uint32_t addr))
+    X(void, trace_enter, (NtrCpu* c, uint32_t addr)) \
+    /* mod function hook dispatch; returns 1 if hooks ran (and handled/called orig), 0 to run orig directly */ \
+    X(int, hook_dispatch, (NtrCpu* c, uint32_t addr, NtrFunc orig))
 
 typedef struct NtrHostApi {
     uint32_t abi;  /* NTR_ABI_VERSION */
@@ -145,6 +149,7 @@ extern NtrHostApi ntr_host;
 #define ntr_bad_jump (ntr_host.bad_jump)
 #define ntr_unimplemented (ntr_host.unimplemented)
 #define ntr_trace_enter (ntr_host.trace_enter)
+#define ntr_hook_dispatch (ntr_host.hook_dispatch)
 #else
 /* ---- runtime services (implemented by the runtime) ---- */
 #define NTR_PROTOTYPE_SERVICE(ret, name, args) ret ntr_##name args;
@@ -163,6 +168,11 @@ void ntr_fill_host_api(NtrHostApi* api);
 #else
 #define NTR_ENTER(a) ((void)0)
 #endif
+#define NTR_HOOK_CHECK(a, fn) \
+    do { \
+        if (c->hook_bloom && (c->hook_bloom[((a) >> 5) & 0xFFFu] & (1u << (((a) >> 2) & 7u))) && \
+            ntr_hook_dispatch(c, (a), (fn))) return; \
+    } while (0)
 #define POLL() do { if (c->cycles >= c->next_event) ntr_poll(c); } while (0)
 
 static inline uint32_t ntr_get_cpsr(NtrCpu* c) {

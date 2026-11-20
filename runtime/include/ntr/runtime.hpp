@@ -174,9 +174,58 @@ public:
     virtual void request_save_state() = 0;
     virtual void request_load_state(std::vector<uint8_t> state) = 0;
 
-    // Reads the ARM9's view of main RAM, DTCM or ITCM (a game hook in the frontend looking at the game's state),
-    // without touching the bus: 0 elsewhere. From Host::on_frame.
+    // Reads the ARM9's view of main RAM, DTCM, ITCM, safe display/input I/O registers (0x04000000-0x04001FFF),
+    // Palette RAM (0x05000000-0x050007FF), or OAM (0x07000000-0x070007FF), without touching the bus: 0 elsewhere.
+    // From Host::on_frame.
+    virtual uint8_t peek8(uint32_t address) const = 0;
+    virtual uint16_t peek16(uint32_t address) const = 0;
     virtual uint32_t peek32(uint32_t address) const = 0;
+
+    // Safe writes to main RAM, DTCM, or ITCM (returns false elsewhere). From Host::on_frame.
+    virtual bool poke8(uint32_t address, uint8_t value) = 0;
+    virtual bool poke16(uint32_t address, uint16_t value) = 0;
+    virtual bool poke32(uint32_t address, uint32_t value) = 0;
+
+    // Bulk read/write across main RAM, DTCM, ITCM, Palette, or OAM (returns number of bytes transferred).
+    virtual size_t read_mem(uint32_t address, uint8_t* out, size_t size) const = 0;
+    virtual size_t write_mem(uint32_t address, const uint8_t* data, size_t size) = 0;
+    // Read-only access to the active cartridge ROM bytes (returns number of bytes read).
+    virtual size_t read_rom(uint32_t offset, uint8_t* out, size_t size) const = 0;
+
+    // Hardware display state snapshot for frontend hooks and mods (from Host::on_frame).
+    struct DisplayInfo {
+        uint32_t powcnt1 = 0;
+        uint32_t dispcnt_a = 0;
+        uint32_t dispcnt_b = 0;
+        uint16_t master_bright_a = 0;
+        uint16_t master_bright_b = 0;
+        uint32_t disp3dcnt = 0;
+        bool screen_swap = false;    // POWCNT1 bit 15: true = Engine A (3D) on top screen, false = on bottom screen
+        bool screens_enabled = false;
+        bool lid_closed = false;
+        bool new_3d_frame = false;   // true when 3D swapped in a new polygon list this frame
+    };
+    virtual DisplayInfo display_info() const = 0;
+
+    // ---- Dynamic game-function hooking (Pre / Post / Replace) and symbol resolution ----
+    enum class HookKind { Pre, Post, Replace };
+    enum class HookAction { Continue = 0, SkipOriginal = 1 };
+    using FunctionHookCallback = HookAction (*)(NtrCpu* cpu, uint32_t addr, void* userdata);
+
+    // Resolves a named function from functions.txt to its ARM9 address (bit 0 = Thumb), or 0 if not found.
+    virtual uint32_t resolve_symbol(const char* name) const = 0;
+    // Returns the symbol name for an ARM9 function address, or nullptr if unnamed.
+    virtual const char* symbol_name(uint32_t addr) const = 0;
+    // Installs a pre, post, or replace hook on any recompiled ARM9 function. Returns a handle (>0), or 0 on failure.
+    virtual uint64_t add_function_hook(uint32_t addr, HookKind kind, FunctionHookCallback cb, void* userdata,
+                                       int priority = 0) = 0;
+    virtual bool remove_function_hook(uint64_t handle) = 0;
+    virtual void clear_function_hooks() = 0;
+    // Invokes the original function from inside a Replace hook callback.
+    virtual bool call_hook_original(uint64_t handle, NtrCpu* cpu) = 0;
+    // Calls a guest ARM9 function safely from the game thread (e.g. from Host::on_frame).
+    virtual bool call_guest_function(uint32_t addr, uint32_t r0, uint32_t r1, uint32_t r2, uint32_t r3,
+                                     uint32_t* out_r0 = nullptr) = 0;
 };
 
 // The microphone: while on, the DS's mic hears loud noise, as when the player blows into it or shouts (a button can

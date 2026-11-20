@@ -16,7 +16,9 @@ if (Clear-IfMoved (Join-Path $AndroidDir 'app\.cxx')) {
     if ((Test-Path $appBuild) -and -not $DryRun) { Remove-Item -Recurse -Force $appBuild }
 }
 $sdlSrc = Join-Path $BuildDir '_deps\sdl3-src'
-foreach ($p in @((Join-Path $generated 'func_table.c'), (Join-Path $sdlSrc 'android-project\app\src\main\java\org\libsdl\app\SDLActivity.java'))) {
+$luaSrc = Join-Path $BuildDir '_deps\lua-src'
+$minizSrc = Join-Path $BuildDir '_deps\miniz-src'
+foreach ($p in @((Join-Path $generated 'func_table.c'), (Join-Path $sdlSrc 'android-project\app\src\main\java\org\libsdl\app\SDLActivity.java'), (Join-Path $luaSrc 'lua.h'), (Join-Path $minizSrc 'miniz.h'))) {
     if (-not (Test-Path $p)) {
         if ($DryRun) { Step "not there yet (2-BUILD.ps1 makes it): $p" } else { Fail "missing ${p}: run 2-BUILD.ps1 first" }
     }
@@ -91,7 +93,7 @@ $env:PATH = "$(Split-Path -Parent $ninjaPath);$env:PATH"
 $wrapper = Join-Path $AndroidDir 'gradle\wrapper\gradle-wrapper.jar'
 $gradleArgs = @('-classpath', $wrapper, 'org.gradle.wrapper.GradleWrapperMain', '--no-daemon', '-p', $AndroidDir,
                 ':app:assembleDebug', "-PphCmakeVersion=$cmakeVersion", "-PphNinja=$ninjaPath",
-                "-PphGeneratedDir=$generated", "-PphSdlSource=$sdlSrc")
+                "-PphGeneratedDir=$generated", "-PphSdlSource=$sdlSrc", "-PphLuaSource=$luaSrc", "-PphMinizSource=$minizSrc")
 # One signing key for every PC (the PS1 project's): the phone only installs an update signed like the installed app.
 # PH_KEYSTORE names it (the build PC's workflow); else debug.keystore in the tools folder.
 $key = if ($env:PH_KEYSTORE) { $env:PH_KEYSTORE } else { Join-Path $ToolsCache 'debug.keystore' }

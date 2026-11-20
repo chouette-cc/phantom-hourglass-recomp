@@ -205,6 +205,16 @@ final class PhMenu {
             activity.onBackPressed();
         });
 
+        section(list, "Mods");
+        final int modCount = PhInput.nativeLoadedModCount();
+        list.addView(label(modCount == 0 ? "No active mods"
+                        : (modCount + (modCount == 1 ? " mod active" : " mods active")),
+                "Import and enable mods from the launcher's Mods menu. Reload applies Lua script changes live."));
+        row(list, "Reload mods", () -> {
+            PhInput.nativeReloadMods();
+            close();
+        });
+
         section(list, "Controls");
         final boolean wideAvailable = prefs.getBoolean("gpu", true) && !PhInput.nativeGpuFailed();
         final int wideMode = prefs.getBoolean("wide", false) ? Math.max(1, Math.min(2, prefs.getInt("wide_mode", 1))) : 0;

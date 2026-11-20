@@ -100,6 +100,14 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_phrecomp_ph_PhInput_nativeResumeD
     return ph::pad::resume_done.load() && !ph::pad::resume_request.load() ? JNI_TRUE : JNI_FALSE;
 }
 
+extern "C" JNIEXPORT void JNICALL Java_com_phrecomp_ph_PhInput_nativeReloadMods(JNIEnv*, jclass) {
+    ph::pad::reload_mods.store(true);
+}
+
+extern "C" JNIEXPORT jint JNICALL Java_com_phrecomp_ph_PhInput_nativeLoadedModCount(JNIEnv*, jclass) {
+    return jint(ph::pad::loaded_mod_count.load());
+}
+
 namespace {
 
 // Android drops a native program's stdout and stderr: send both, line by line, to logcat (tag "phrecomp").

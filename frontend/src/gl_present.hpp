@@ -35,10 +35,25 @@ public:
     void begin(int width, int height);  // window pixels
     // Layer 0 top, 1 bottom. `wide`: a widescreen picture's wide screen is shown whole (else its middle 256 pixels).
     void screen(const ntr::Frame& frame, int layer, const Rect& where, bool smooth, bool wide = false);
+    // Extended screen draw for mods: sub-rect in normalized [0..1] screen coordinates, opacity and tint (0xAARRGGBB).
+    void screen_ex(const ntr::Frame& frame, int layer, const Rect& where, float u0, float v0, float u1, float v1,
+                   bool smooth, bool wide = false, float alpha = 1.0f, uint32_t tint_argb = 0xFFFFFFFFu);
     void fill(const Rect& where, uint32_t argb);
+    void outline(const Rect& where, float thickness, uint32_t argb);
+    // Scissor clip in window pixels (top-left origin); clear_clip() restores full window.
+    void set_clip(const Rect& where);
+    void clear_clip();
     // 8x8 characters at `size` pixels each; returns the width drawn.
     float text(float x, float y, float size, const std::string& s, uint32_t argb);
     void end();
+
+    // Custom RGBA8 textures for mods (handle >= 1, 0 on failure). Cleared on reload or shutdown.
+    int create_image(const uint32_t* rgba_pixels, int width, int height, bool smooth = true);
+    void destroy_image(int id);
+    void clear_mod_images();
+    bool image_size(int id, int& width, int& height) const;
+    void draw_image(int id, const Rect& where, float u0 = 0.0f, float v0 = 0.0f, float u1 = 1.0f, float v1 = 1.0f,
+                    float alpha = 1.0f, uint32_t tint_argb = 0xFFFFFFFFu);
 
     // Save state pictures: both screens (256 x 384, 0xAARRGGBB, top then bottom) of slot 0-11, kept in a texture;
     // thumbnail() draws one screen of one (layer 0 top, 1 bottom).
@@ -47,8 +62,14 @@ public:
 
     // Both screens of `frame`, stacked (top then bottom), at the renderer's resolution, as 0xAARRGGBB rows.
     bool read_screens(const ntr::Frame& frame, std::vector<uint32_t>& out, int& width, int& height);
+    // The composited window backbuffer (including mod custom rendering & overlays), top-down 0xAARRGGBB rows.
+    bool read_backbuffer(std::vector<uint32_t>& out, int& width, int& height);
 
 private:
+    struct ModImage {
+        unsigned tex = 0;
+        int w = 0, h = 0;
+    };
     void quad(const Rect& r, float u0, float v0, float u1, float v1);
 
     SDL_Window* window_ = nullptr;
@@ -56,6 +77,7 @@ private:
     std::string version_;
     static constexpr int kThumbLayers = 24;
     unsigned program_ = 0, vao_ = 0, vbo_ = 0, soft_tex_ = 0, font_tex_ = 0, read_fbo_ = 0, thumb_tex_ = 0;
+    std::vector<ModImage> mod_images_;
     mutable unsigned checked_frame_texture_ = 0;
     mutable bool checked_frame_texture_valid_ = true;
     int u_view_ = -1, u_mode_ = -1, u_layer_ = -1, u_color_ = -1, u_tex_ = -1, u_font_ = -1;
