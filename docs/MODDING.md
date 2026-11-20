@@ -13,13 +13,18 @@ Phantom Hourglass Recomp features a **Dusklight-inspired, three-tier Mod System*
 ## Installing Mods
 
 ### PC (Windows / Linux)
-- Drop `.phmod` files or unpacked mod folders into `<data-dir>/mods/` (in portable builds: `PhantomHourglass/data/mods/`).
-- Press `F1` / `Esc` → **Mods** tab to enable/disable mods, adjust mod settings live, or reload (`F6`).
-- CLI flags: `--mods-dir <dir>`, `--no-mods`, `--mod-dev`.
+- **Built-in Mod Browser**: Press `F1` / `Esc` → **Mods** → **Browse Online** to browse, install, update, or remove community mods in one click (with automatic SHA-256 verification and live reload).
+- **Manual install**: Drop `.phmod` files or unpacked mod folders into `<data-dir>/mods/` (in portable builds: `PhantomHourglass/data/mods/`).
+- Press `F1` / `Esc` → **Mods** tab to enable/disable mods, adjust mod settings & click-to-bind hotkeys live, remove mods, or reload (`F6`).
+- CLI flags: `--mods-dir <dir>`, `--mod-catalog <url>`, `--no-mods`, `--mod-dev`.
+- Custom catalog URL: create `<data-dir>/mods/catalog.url` containing an `https://` URL to any `catalog.json` (see [`docs/mod_catalog.example.json`](mod_catalog.example.json)).
 
 ### Android
-- Open the launcher → **Mods** → **Import mod (.phmod / .zip)…**.
+- Open the launcher → **Mods** → **Browse Online…** to install or update mods directly from the community catalog (or tap **Catalog URL…** to use a custom catalog).
+- Or choose **Import file…** to install a local `.phmod` / `.zip` bundle.
 - Toggle mods on/off from the launcher, or hot-reload scripts live from the in-game `≡` menu → **Mods** → **Reload mods**.
+
+> **Security note**: Asset-only and Lua mods run safely inside the NitroFS overlay / Lua sandbox. Native C++ mods (`"kind": "native"`) execute unsandboxed code — the Mod Browser clearly labels them and requires explicit confirmation before installing, in addition to verifying SHA-256 checksums.
 
 ---
 

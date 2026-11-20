@@ -46,6 +46,7 @@
 
 #include "game_module.hpp"
 #include "layout.hpp"
+#include "mod_catalog.hpp"
 #include "mod_manager.hpp"
 #include "mod_romfs.hpp"
 #include "ntr/rom.hpp"
@@ -361,13 +362,17 @@ struct Shared {
     int menu_selected = 0;
     int menu_page = 0;
     int menu_selected_mod = 0;
+    int menu_mod_subpage = 0;
+    int menu_catalog_scroll = 0;
+    std::string menu_confirm_native_id;
+    std::string menu_confirm_remove_id;
     bool menu_capturing_hotkey = false;
     std::string menu_capture_mod_id;
     std::string menu_capture_cfg_key;
     bool video_dirty = false;
     std::atomic<int> mod_layout_request{-1};
     struct ModAction {
-        enum class Kind { Reload, Toggle, StepConfig, SetConfigString };
+        enum class Kind { Reload, Toggle, StepConfig, SetConfigString, Uninstall };
         Kind kind = Kind::Reload;
         std::string mod_id;
         std::string cfg_key;
@@ -382,6 +387,7 @@ struct Shared {
         mod_actions.push_back(std::move(a));
     }
     ph::ModManager* mods = nullptr;
+    ph::ModCatalogClient* mod_catalog = nullptr;
     std::mutex shot_name_mutex;
     std::string shot_custom_name;
     std::atomic<bool> gpu_failed{false};  // the GPU renderer could not start
@@ -483,6 +489,15 @@ public:
                     mods_->step_mod_config(a.mod_id, a.cfg_key, a.dir);
                 } else if (a.kind == Shared::ModAction::Kind::SetConfigString) {
                     mods_->set_mod_config_string(a.mod_id, a.cfg_key, a.cfg_str);
+                } else if (a.kind == Shared::ModAction::Kind::Uninstall) {
+                    mods_->shutdown_all(gl_);
+                    std::string uerr;
+                    if (ph::uninstall_mod_bundle(mods_->mods_dir(), a.mod_id, uerr)) {
+                        s_.say("Removed mod " + a.mod_id);
+                    } else {
+                        s_.say("Remove failed: " + uerr, 3500);
+                    }
+                    want_reload = true;
                 } else if (a.kind == Shared::ModAction::Kind::Reload) {
                     want_reload = true;
                 }
@@ -749,8 +764,8 @@ private:
     void draw(const ntr::Frame& frame, bool count_game_frame = true, const std::string& window_shot_path = {}) {
         Settings view;
         bool menu_open, video_dirty, capturing_hotkey = false;
-        int selected, page, selected_mod;
-        std::string capture_mod_id, capture_cfg_key;
+        int selected, page, selected_mod, mod_subpage = 0, catalog_scroll = 0;
+        std::string capture_mod_id, capture_cfg_key, confirm_native_id, confirm_remove_id;
         {
             std::lock_guard<std::mutex> lock(s_.view_mutex);
             view = s_.view;
@@ -758,10 +773,15 @@ private:
             selected = s_.menu_selected;
             page = s_.menu_page;
             selected_mod = s_.menu_selected_mod;
+            mod_subpage = s_.menu_mod_subpage;
+            catalog_scroll = s_.menu_catalog_scroll;
+            confirm_native_id = s_.menu_confirm_native_id;
+            confirm_remove_id = s_.menu_confirm_remove_id;
             capturing_hotkey = s_.menu_capturing_hotkey;
             capture_mod_id = s_.menu_capture_mod_id;
             capture_cfg_key = s_.menu_capture_cfg_key;
-            (void)selected, (void)page, (void)selected_mod, (void)capturing_hotkey, (void)capture_mod_id, (void)capture_cfg_key;
+            (void)selected, (void)page, (void)selected_mod, (void)mod_subpage, (void)catalog_scroll;
+            (void)capturing_hotkey, (void)capture_mod_id, (void)capture_cfg_key, (void)confirm_native_id, (void)confirm_remove_id;
             video_dirty = s_.video_dirty;
             s_.video_dirty = false;
         }
@@ -871,6 +891,10 @@ private:
             menu.page = page;
             menu.selected = selected;
             menu.selected_mod = selected_mod;
+            menu.mod_subpage = mod_subpage;
+            menu.catalog_scroll = catalog_scroll;
+            menu.confirm_native_id = confirm_native_id;
+            menu.confirm_remove_id = confirm_remove_id;
             menu.capturing_hotkey = capturing_hotkey;
             menu.capture_mod_id = capture_mod_id;
             menu.capture_cfg_key = capture_cfg_key;
@@ -885,6 +909,7 @@ private:
             ms.fixes = view.fixes;
             ms.compute = view.compute;
             if (mods_) ms.mods = mods_->summaries();
+            if (s_.mod_catalog && page == 2) ms.catalog = s_.mod_catalog->snapshot();
             ms.selected_mod = selected_mod;
             const int layer = view.layout == Layout::Top ? 0 : 1;  // the screen the player looks at
             menu.draw(*gl_, ms, float(w), float(h), ui, float(ph::pad::game_fps10.load()) / 10.0f,
@@ -1147,7 +1172,7 @@ int main(int argc, char** argv) {
     uint64_t exit_after = 0;
     bool fullscreen_arg = false, unpaced = false, read_only_save = false, continue_arg = false, wide_arg = false, wide21_arg = false;
     bool fps_probe_arg = false, no_mods_arg = false, mod_dev_arg = false;
-    std::string renderer_arg, textures_arg;
+    std::string renderer_arg, textures_arg, mod_catalog_arg;
     int scale_arg = 0, fixes_arg = -1;
     for (int i = 1; i < argc; i++) {
         const std::string a = argv[i];
@@ -1155,6 +1180,7 @@ int main(int argc, char** argv) {
         if (a == "--save-file" && has) save_path = argv[++i];
         else if (a == "--data-dir" && has) data_dir = argv[++i];
         else if (a == "--mods-dir" && has) mods_dir_arg = argv[++i];
+        else if (a == "--mod-catalog" && has) mod_catalog_arg = argv[++i];
         else if (a == "--no-mods") no_mods_arg = true;
         else if (a == "--mod-dev") mod_dev_arg = true;
         else if (a == "--input-script" && has) script_path = argv[++i];
@@ -1357,6 +1383,11 @@ int main(int argc, char** argv) {
         mods.set_save_blob_dir(save_path.parent_path() / (save_path.stem().string() + ".moddata"));
         shared.mods = &mods;
     }
+    ph::ModCatalogClient mod_catalog;
+    if (mods_enabled) {
+        mod_catalog.set_config(mods.mods_dir(), ph::resolve_mod_catalog_url(mods.mods_dir(), mod_catalog_arg));
+        shared.mod_catalog = &mod_catalog;
+    }
     Host host(shared, window, audio, std::move(script), exit_after, unpaced);
     host.set_resume(continue_arg && !testing, !testing);
     if (mods_enabled) host.set_mods(&mods);
@@ -1436,6 +1467,10 @@ int main(int argc, char** argv) {
         shared.menu_selected = menu.selected;
         shared.menu_page = menu.page;
         shared.menu_selected_mod = menu.selected_mod;
+        shared.menu_mod_subpage = menu.mod_subpage;
+        shared.menu_catalog_scroll = menu.catalog_scroll;
+        shared.menu_confirm_native_id = menu.confirm_native_id;
+        shared.menu_confirm_remove_id = menu.confirm_remove_id;
         shared.menu_capturing_hotkey = menu.capturing_hotkey;
         shared.menu_capture_mod_id = menu.capture_mod_id;
         shared.menu_capture_cfg_key = menu.capture_cfg_key;
@@ -1460,7 +1495,10 @@ int main(int argc, char** argv) {
         ms.textures = settings.textures;
         ms.fixes = settings.fixes;
         ms.compute = settings.compute;
-        if (mods_enabled) ms.mods = mods.summaries();
+        if (mods_enabled) {
+            ms.mods = mods.summaries();
+            if (menu.page == 2) ms.catalog = mod_catalog.snapshot();
+        }
         ms.selected_mod = menu.selected_mod;
         return ms;
     };
@@ -1475,8 +1513,12 @@ int main(int argc, char** argv) {
             shared.push_mod_action({Shared::ModAction::Kind::StepConfig, ms.action_mod_id, ms.action_cfg_key, {}, false, ms.action_cfg_dir});
         if (r == ph::MenuResult::SetModConfigString && mods_enabled)
             shared.push_mod_action({Shared::ModAction::Kind::SetConfigString, ms.action_mod_id, ms.action_cfg_key, ms.action_cfg_str, false, 0});
+        if (r == ph::MenuResult::UninstallMod && mods_enabled)
+            shared.push_mod_action({Shared::ModAction::Kind::Uninstall, ms.action_mod_id, {}, {}, false, 0});
         if (r == ph::MenuResult::ReloadMods && mods_enabled)
             shared.push_mod_action(Shared::ModAction{Shared::ModAction::Kind::Reload, {}, {}, {}, false, 0});
+        if (r == ph::MenuResult::RefreshCatalog && mods_enabled) mod_catalog.fetch_async();
+        if (r == ph::MenuResult::InstallCatalogMod && mods_enabled) mod_catalog.install_async(ms.action_catalog_mod);
         settings.layout = ms.layout, settings.gpu = ms.gpu, settings.scale = ms.scale;
         settings.smooth = ms.smooth, settings.fps = ms.fps, settings.slot = ms.slot;
         settings.fps_corner = ms.fps_corner, settings.stretch = ms.stretch;
@@ -1584,6 +1626,14 @@ int main(int argc, char** argv) {
                     } else {
                         std::lock_guard<std::mutex> lock(shared.keys_mutex);
                         shared.mouse_pressed |= SDL_BUTTON_MASK(e.button.button);
+                    }
+                    break;
+                case SDL_EVENT_MOUSE_WHEEL:
+                    if (testing) break;
+                    if (menu.open && menu.page == 2) {
+                        ph::MenuState ms = menu_state();
+                        menu.wheel(e.wheel.y, ms);
+                        publish(false);
                     }
                     break;
 #endif
@@ -1845,6 +1895,14 @@ int main(int argc, char** argv) {
         if (SDL_GetTicks() - last_flush > 2000) {
             flush_save();
             last_flush = SDL_GetTicks();
+        }
+        if (mods_enabled) {
+            bool inst_ok = false;
+            std::string inst_msg;
+            if (mod_catalog.consume_install_finished(inst_ok, inst_msg)) {
+                shared.say(inst_msg, 3500);
+                if (inst_ok) shared.push_mod_action(Shared::ModAction{Shared::ModAction::Kind::Reload, {}, {}, {}, false, 0});
+            }
         }
         if (quit_deadline && (shared.resume_done.load() || SDL_GetTicks() > quit_deadline)) shared.quit = true;
     }

@@ -368,8 +368,9 @@ public final class LauncherActivity extends Activity {
         }
         if (labels.isEmpty()) {
             look.dialog().setTitle("Mods")
-                    .setMessage("No mods installed yet.\n\nImport a mod bundle (.phmod or .zip containing mod.json) to install it into app storage.")
-                    .setPositiveButton("Import mod (.phmod / .zip)…", (d, w) -> pick(PICK_MOD_ZIP))
+                    .setMessage("No mods installed yet.\n\nBrowse the online community catalog or import a local .phmod / .zip bundle.")
+                    .setPositiveButton("Browse Online…", (d, w) -> PhModCatalogUi.openBrowser(this, modsDir(), this::manageMods))
+                    .setNeutralButton("Import file…", (d, w) -> pick(PICK_MOD_ZIP))
                     .setNegativeButton("Back", null).show();
             return;
         }
@@ -382,9 +383,19 @@ public final class LauncherActivity extends Activity {
                     writeModsIni(states);
                     manageMods();
                 })
-                .setPositiveButton("Import mod (.phmod / .zip)…", (d, w) -> pick(PICK_MOD_ZIP))
-                .setNeutralButton("Remove…", (d, w) -> removeModDialog(modFolders, labels))
+                .setPositiveButton("Browse Online…", (d, w) -> PhModCatalogUi.openBrowser(this, modsDir(), this::manageMods))
+                .setNeutralButton("Import / Remove…", (d, w) -> modActionsDialog(modFolders, labels))
                 .setNegativeButton("Done", null).show();
+    }
+
+    private void modActionsDialog(List<File> modFolders, List<String> labels) {
+        final String[] acts = {"Import local mod (.phmod / .zip)…", "Remove an installed mod…"};
+        look.dialog().setTitle("Mod Actions")
+                .setItems(acts, (d, which) -> {
+                    if (which == 0) pick(PICK_MOD_ZIP);
+                    else removeModDialog(modFolders, labels);
+                })
+                .setNegativeButton("Back", (d, w) -> manageMods()).show();
     }
 
     private void removeModDialog(List<File> modFolders, List<String> labels) {

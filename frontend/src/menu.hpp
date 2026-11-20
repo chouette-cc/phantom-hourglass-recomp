@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "layout.hpp"
+#include "mod_catalog.hpp"
 #include "mod_manager.hpp"
 
 namespace ph {
@@ -40,15 +41,21 @@ struct MenuState {
     bool compute = false;      // with gpu: the compute-shader renderer (texture filtering is unavailable)
     // Mods page:
     std::vector<ModSummary> mods;
+    ModCatalogSnapshot catalog;
     int selected_mod = 0;
     std::string action_mod_id;
     std::string action_cfg_key;
     std::string action_cfg_str;
     int action_cfg_dir = 0;
     bool action_mod_enable = false;
+    CatalogModEntry action_catalog_mod;
 };
 
-enum class MenuResult { None, Changed, Quit, SaveState, LoadState, Continue, ToggleMod, StepModConfig, SetModConfigString, ReloadMods };
+enum class MenuResult {
+    None, Changed, Quit, SaveState, LoadState, Continue,
+    ToggleMod, StepModConfig, SetModConfigString, ReloadMods,
+    RefreshCatalog, InstallCatalogMod, UninstallMod
+};
 
 class Menu {
 public:
@@ -56,6 +63,10 @@ public:
     int page = 0;  // 0 Settings, 1 Save states, 2 Mods
     int selected = 0;
     int selected_mod = 0;
+    int mod_subpage = 0;       // 0 Installed, 1 Browse Online
+    int catalog_scroll = 0;
+    std::string confirm_native_id;
+    std::string confirm_remove_id;
     bool capturing_hotkey = false;
     std::string capture_mod_id;
     std::string capture_cfg_key;
@@ -65,6 +76,8 @@ public:
     MenuResult capture_binding(const std::string& binding, MenuState& s);
     // A click at window pixel (x, y); a click beside the panel closes it.
     MenuResult click(float x, float y, float win_w, float win_h, float ui, MenuState& s);
+    // Mouse wheel scroll (positive y = scroll up).
+    void wheel(float delta_y, const MenuState& s);
     // `thumbnail(slot, where)` draws a slot's picture (slot 0-11).
     template <class Thumb>
     void draw(GlPresenter& gl, const MenuState& s, float win_w, float win_h, float ui, float fps, Thumb thumbnail) const {
@@ -105,10 +118,15 @@ private:
         std::array<Rect, kStateSlots> thumbs{};
         std::array<Rect, 2> buttons{};
         // Mods page:
+        std::array<Rect, 2> mod_subtabs{};
         std::vector<ModRowGeom> mod_rows;
         std::vector<ModCfgGeom> mod_cfgs;
         Rect mod_info_rect;
         Rect mod_reload_btn;
+        Rect mod_remove_btn;
+        // Mods Browse Online subpage:
+        Rect cat_list;
+        std::array<Rect, 3> cat_buttons{};  // 0 Prev, 1 Next, 2 Refresh
     };
     static Geometry geometry(const MenuState& s, float win_w, float win_h, float ui);
     static Rect panel(float win_w, float win_h, float ui);

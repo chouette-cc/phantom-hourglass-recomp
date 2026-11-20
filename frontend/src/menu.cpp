@@ -11,7 +11,7 @@ namespace {
 // The Android menu's colours.
 constexpr uint32_t kShade = 0x55000000, kPanel = 0xF0181820, kRow = 0xFF2A2A34, kRowOff = 0xFF202028,
                    kAccent = 0xFF8AB4FF, kWhite = 0xFFFFFFFF, kHint = 0xFF9090A0, kOff = 0xFF606068,
-                   kEmpty = 0xFF121218, kGold = 0xFFF5C542;
+                   kEmpty = 0xFF121218, kGold = 0xFFF5C542, kDanger = 0xFF9E3A3A, kGreen = 0xFF6EE08A;
 
 enum RowId { kScreen, kRenderer, kResolution, kTextures, kFixes, kPicture, kSize, kWide, kFps, kFullscreen, kStick, kContinue, kQuit,
              kRowCount };
@@ -97,14 +97,21 @@ Menu::Geometry Menu::geometry(const MenuState& s, float win_w, float win_h, floa
     const float by = y + float((kStateSlots + kColumns - 1) / kColumns) * (ch + gap) + 12 * ui;
     g.buttons = {Rect{p.x + pad, by, half, chip_h + 6 * ui}, Rect{p.x + pad + half + gap, by, half, chip_h + 6 * ui}};
 
-    // Mods page: list of discovered mods, selected mod's config items, and Reload button at the bottom.
+    // Mods page: Installed vs Browse Online sub-tabs, list/config items, and bottom action bar.
+    const float sub_h = 30 * ui;
+    g.mod_subtabs = {Rect{p.x + pad, y, half, sub_h}, Rect{p.x + pad + half + gap, y, half, sub_h}};
+    const float mod_body_y = y + sub_h + 10 * ui;
     const float reload_h = chip_h + 2 * ui;
     const float small_h = 12 * ui;
-    g.mod_reload_btn = {p.x + pad, win_h - pad - small_h * 2.2f - reload_h, p.w - 2 * pad, reload_h};
-    float my = y;
+    const float btn_y = win_h - pad - small_h * 2.2f - reload_h;
+    const float rem_w = (p.w - 2 * pad - gap) * 0.34f;
+    g.mod_reload_btn = {p.x + pad, btn_y, (p.w - 2 * pad - gap) - rem_w, reload_h};
+    g.mod_remove_btn = {p.x + p.w - pad - rem_w, btn_y, rem_w, reload_h};
+
+    float my = mod_body_y;
     const float row_h = 32 * ui;
     const float toggle_w = 56 * ui;
-    const float list_limit = g.mod_reload_btn.y - 12 * ui;
+    const float list_limit = g.mod_reload_btn.y - 10 * ui;
     for (size_t i = 0; i < s.mods.size() && my + row_h <= list_limit; i++) {
         g.mod_rows.push_back({{p.x + pad, my, p.w - 2 * pad - toggle_w - gap, row_h},
                               {p.x + p.w - pad - toggle_w, my, toggle_w, row_h}});
@@ -137,6 +144,16 @@ Menu::Geometry Menu::geometry(const MenuState& s, float win_w, float win_h, floa
             my += row_h + gap;
         }
     }
+
+    // Mods Browse Online sub-page geometry
+    const float cat_top = mod_body_y + 24 * ui;
+    const float cat_h = std::max(80 * ui, btn_y - 10 * ui - cat_top);
+    g.cat_list = {p.x + pad, cat_top, p.w - 2 * pad, cat_h};
+    g.cat_buttons = {
+        Rect{p.x + pad, btn_y, third, reload_h},
+        Rect{p.x + pad + third + gap, btn_y, third, reload_h},
+        Rect{p.x + pad + 2 * (third + gap), btn_y, third, reload_h},
+    };
     return g;
 }
 
@@ -213,13 +230,28 @@ MenuResult Menu::key(SDL_Scancode key, MenuState& s) {
         page = (page + 1) % 3;
         return MenuResult::None;
     }
-    if (page == 2) {  // Mods: Up/Down selects mod, Space/Enter toggles it, R reloads all mods
+    if (page == 2) {  // Mods: Installed vs Browse Online
+        if (key == SDL_SCANCODE_LEFT || key == SDL_SCANCODE_RIGHT) {
+            mod_subpage = 1 - mod_subpage;
+            confirm_native_id.clear();
+            confirm_remove_id.clear();
+            if (mod_subpage == 1 && s.catalog.status == ModCatalogSnapshot::Status::Idle)
+                return MenuResult::RefreshCatalog;
+            return MenuResult::None;
+        }
+        if (mod_subpage == 1) {
+            if (key == SDL_SCANCODE_R) return MenuResult::RefreshCatalog;
+            const int max_s = std::max(0, int(s.catalog.entries.size()) - 1);
+            if (key == SDL_SCANCODE_UP) catalog_scroll = std::max(0, catalog_scroll - 1);
+            else if (key == SDL_SCANCODE_DOWN) catalog_scroll = std::min(max_s, catalog_scroll + 1);
+            return MenuResult::None;
+        }
         if (key == SDL_SCANCODE_R || key == SDL_SCANCODE_F6) return MenuResult::ReloadMods;
         if (!s.mods.empty()) {
             const int n = int(s.mods.size());
             selected_mod = std::clamp(selected_mod, 0, n - 1);
-            if (key == SDL_SCANCODE_UP) selected_mod = (selected_mod + n - 1) % n;
-            if (key == SDL_SCANCODE_DOWN) selected_mod = (selected_mod + 1) % n;
+            if (key == SDL_SCANCODE_UP) { selected_mod = (selected_mod + n - 1) % n; confirm_remove_id.clear(); }
+            if (key == SDL_SCANCODE_DOWN) { selected_mod = (selected_mod + 1) % n; confirm_remove_id.clear(); }
             s.selected_mod = selected_mod;
             if (key == SDL_SCANCODE_RETURN || key == SDL_SCANCODE_SPACE) {
                 const ModSummary& m = s.mods[size_t(selected_mod)];
@@ -267,25 +299,102 @@ MenuResult Menu::key(SDL_Scancode key, MenuState& s) {
     return MenuResult::None;
 }
 
+void Menu::wheel(float delta_y, const MenuState& s) {
+    if (!open || page != 2 || mod_subpage != 1) return;
+    const int max_scroll = std::max(0, int(s.catalog.entries.size()) - 1);
+    const int step = delta_y > 0 ? -2 : (delta_y < 0 ? 2 : 0);
+    catalog_scroll = std::clamp(catalog_scroll + step, 0, max_scroll);
+}
+
 MenuResult Menu::click(float x, float y, float win_w, float win_h, float ui, MenuState& s) {
     s.selected_mod = selected_mod;
     const Geometry g = geometry(s, win_w, win_h, ui);
     if (!g.panel.contains(x, y)) {
         open = false;
         capturing_hotkey = false;
+        confirm_native_id.clear();
+        confirm_remove_id.clear();
         return MenuResult::None;
     }
     for (int t = 0; t < 3; t++)
         if (g.tabs[size_t(t)].contains(x, y)) {
             page = t;
             capturing_hotkey = false;
+            confirm_native_id.clear();
+            confirm_remove_id.clear();
             return MenuResult::None;
         }
     if (page == 2) {
+        if (g.mod_subtabs[0].contains(x, y)) {
+            mod_subpage = 0;
+            capturing_hotkey = false;
+            confirm_native_id.clear();
+            return MenuResult::None;
+        }
+        if (g.mod_subtabs[1].contains(x, y)) {
+            mod_subpage = 1;
+            capturing_hotkey = false;
+            confirm_remove_id.clear();
+            if (s.catalog.status == ModCatalogSnapshot::Status::Idle) return MenuResult::RefreshCatalog;
+            return MenuResult::None;
+        }
+        if (mod_subpage == 1) {
+            const float card_h = 62 * ui, card_gap = 6 * ui;
+            const int visible = std::max(1, int((g.cat_list.h + card_gap) / (card_h + card_gap)));
+            const int max_scroll = std::max(0, int(s.catalog.entries.size()) - visible);
+            const int start = std::clamp(catalog_scroll, 0, max_scroll);
+            if (g.cat_buttons[0].contains(x, y)) {
+                catalog_scroll = std::max(0, start - 3);
+                confirm_native_id.clear();
+                return MenuResult::None;
+            }
+            if (g.cat_buttons[1].contains(x, y)) {
+                catalog_scroll = std::min(max_scroll, start + 3);
+                confirm_native_id.clear();
+                return MenuResult::None;
+            }
+            if (g.cat_buttons[2].contains(x, y)) {
+                confirm_native_id.clear();
+                return MenuResult::RefreshCatalog;
+            }
+            if (!s.catalog.installing && s.catalog.status == ModCatalogSnapshot::Status::Ready) {
+                const float btn_w = 88 * ui, btn_h = 30 * ui;
+                for (int i = 0; i < visible && start + i < int(s.catalog.entries.size()); i++) {
+                    const Rect card{g.cat_list.x, g.cat_list.y + float(i) * (card_h + card_gap), g.cat_list.w, card_h};
+                    const Rect btn{card.x + card.w - btn_w - 8 * ui, card.y + (card.h - btn_h) / 2, btn_w, btn_h};
+                    if (btn.contains(x, y)) {
+                        const CatalogModEntry& e = s.catalog.entries[size_t(start + i)];
+                        if (e.kind == "native" && confirm_native_id != e.id) {
+                            confirm_native_id = e.id;
+                            return MenuResult::None;
+                        }
+                        confirm_native_id.clear();
+                        s.action_catalog_mod = e;
+                        return MenuResult::InstallCatalogMod;
+                    }
+                }
+            }
+            confirm_native_id.clear();
+            return MenuResult::None;
+        }
         if (g.mod_reload_btn.contains(x, y)) {
             capturing_hotkey = false;
+            confirm_remove_id.clear();
             return MenuResult::ReloadMods;
         }
+        if (g.mod_remove_btn.contains(x, y) && !s.mods.empty()) {
+            capturing_hotkey = false;
+            const int idx = std::clamp(selected_mod, 0, int(s.mods.size()) - 1);
+            const std::string& mid = s.mods[size_t(idx)].id;
+            if (confirm_remove_id != mid) {
+                confirm_remove_id = mid;
+                return MenuResult::None;
+            }
+            confirm_remove_id.clear();
+            s.action_mod_id = mid;
+            return MenuResult::UninstallMod;
+        }
+        confirm_remove_id.clear();
         for (size_t i = 0; i < g.mod_rows.size() && i < s.mods.size(); i++) {
             if (g.mod_rows[i].toggle_rect.contains(x, y)) {
                 capturing_hotkey = false;
@@ -382,10 +491,111 @@ void Menu::draw_panel(GlPresenter& gl, const MenuState& s, float win_w, float wi
     chip(gl, g.tabs[2], "Mods", page == 2, true, text, ui);
 
     if (page == 2) {
+        chip(gl, g.mod_subtabs[0], "Installed (" + std::to_string(s.mods.size()) + ")", mod_subpage == 0, true, 13 * ui, ui);
+        chip(gl, g.mod_subtabs[1], "Browse Online", mod_subpage == 1, true, 13 * ui, ui);
+
+        if (mod_subpage == 1) {
+            const auto& cat = s.catalog;
+            const float hdr_y = g.mod_subtabs[0].y + g.mod_subtabs[0].h + 8 * ui;
+            std::string status_line;
+            uint32_t status_col = kHint;
+            if (cat.installing) {
+                status_line = cat.last_message.empty() ? "Installing..." : cat.last_message;
+                status_col = kGold;
+            } else if (cat.status == ModCatalogSnapshot::Status::Fetching) {
+                status_line = "Fetching online catalog...";
+                status_col = kAccent;
+            } else if (cat.status == ModCatalogSnapshot::Status::Error) {
+                status_line = "Catalog error: " + cat.error;
+                status_col = 0xFFFF8888;
+            } else if (cat.status == ModCatalogSnapshot::Status::Ready) {
+                status_line = cat.catalog_name + " (" + std::to_string(cat.entries.size()) + " mods)";
+                status_col = kWhite;
+            } else {
+                status_line = "Click Refresh to load online mods.";
+            }
+            const float hsz = std::min(small, (p.w - 2 * pad) / float(std::max<size_t>(1, status_line.size())));
+            gl.text(p.x + pad, hdr_y, hsz, status_line, status_col);
+
+            const float card_h = 62 * ui, card_gap = 6 * ui;
+            const int visible = std::max(1, int((g.cat_list.h + card_gap) / (card_h + card_gap)));
+            const int max_scroll = std::max(0, int(cat.entries.size()) - visible);
+            const int start = std::clamp(catalog_scroll, 0, max_scroll);
+
+            if (cat.status == ModCatalogSnapshot::Status::Ready && cat.entries.empty()) {
+                gl.text(g.cat_list.x + 6 * ui, g.cat_list.y + 12 * ui, small, "No mods listed in this catalog yet.", kHint);
+            } else if (cat.status == ModCatalogSnapshot::Status::Error) {
+                gl.text(g.cat_list.x + 6 * ui, g.cat_list.y + 12 * ui, small * 0.9f, "Override URL via data/mods/catalog.url", kHint);
+            } else if (cat.status == ModCatalogSnapshot::Status::Ready) {
+                const float btn_w = 88 * ui, btn_h = 30 * ui;
+                for (int i = 0; i < visible && start + i < int(cat.entries.size()); i++) {
+                    const CatalogModEntry& e = cat.entries[size_t(start + i)];
+                    const Rect card{g.cat_list.x, g.cat_list.y + float(i) * (card_h + card_gap), g.cat_list.w, card_h};
+                    gl.fill(card, kRowOff);
+                    const uint32_t kind_col = (e.kind == "native") ? kGold : (e.kind == "asset") ? kGreen : kAccent;
+                    gl.fill({card.x, card.y, 4 * ui, card.h}, kind_col);
+
+                    const float tx = card.x + 10 * ui;
+                    const float text_w = std::max(80 * ui, card.w - btn_w - 26 * ui);
+                    const std::string title = e.name + " v" + e.version;
+                    const float tsz = std::min(12.5f * ui, text_w / float(std::max<size_t>(1, title.size())));
+                    gl.text(tx, card.y + 6 * ui, tsz, title, kWhite);
+
+                    const char* ktag = (e.kind == "native") ? "[Native C++!]" : (e.kind == "asset") ? "[Asset]" : "[Lua]";
+                    std::string meta = std::string(ktag) + (e.author.empty() ? "" : (" by " + e.author));
+                    const float msz = std::min(9.5f * ui, text_w / float(std::max<size_t>(1, meta.size())));
+                    gl.text(tx, card.y + 23 * ui, msz, meta, kind_col);
+
+                    std::string desc = e.description;
+                    const float dsz = 9.0f * ui;
+                    const size_t max_ch = size_t(std::max(16.0f, text_w / dsz));
+                    if (desc.size() > max_ch && max_ch > 4) desc = desc.substr(0, max_ch - 3) + "...";
+                    const float ddraw = std::min(dsz, text_w / float(std::max<size_t>(1, desc.size())));
+                    gl.text(tx, card.y + 39 * ui, ddraw, desc, kHint);
+
+                    // Installed version lookup
+                    std::string inst_ver;
+                    for (const ModSummary& m : s.mods)
+                        if (m.id == e.id) { inst_ver = m.version; break; }
+                    const bool is_dl = cat.installing && cat.installing_id == e.id;
+                    const bool is_confirm = (e.kind == "native" && confirm_native_id == e.id);
+                    const bool has_update = !inst_ver.empty() && compare_mod_versions(e.version, inst_ver) > 0;
+                    const Rect btn{card.x + card.w - btn_w - 8 * ui, card.y + (card.h - btn_h) / 2, btn_w, btn_h};
+                    if (is_dl) {
+                        chip(gl, btn, "Wait...", false, false, 11 * ui, ui);
+                    } else if (is_confirm) {
+                        gl.fill(btn, kDanger);
+                        const std::string lbl = "Confirm?";
+                        const float bsz = std::min(11 * ui, (btn.w - 8 * ui) / float(lbl.size()));
+                        gl.text(btn.x + (btn.w - bsz * float(lbl.size())) / 2, btn.y + (btn.h - bsz) / 2, bsz, lbl, kWhite);
+                    } else if (has_update) {
+                        gl.fill(btn, kGold);
+                        const std::string lbl = "Update";
+                        const float bsz = std::min(11 * ui, (btn.w - 8 * ui) / float(lbl.size()));
+                        gl.text(btn.x + (btn.w - bsz * float(lbl.size())) / 2, btn.y + (btn.h - bsz) / 2, bsz, lbl, 0xFF000000);
+                    } else if (!inst_ver.empty()) {
+                        chip(gl, btn, "Installed", false, true, 11 * ui, ui);
+                    } else {
+                        chip(gl, btn, "Install", true, !cat.installing, 11 * ui, ui);
+                    }
+                }
+            }
+
+            chip(gl, g.cat_buttons[0], "Prev", false, start > 0, 13 * ui, ui);
+            chip(gl, g.cat_buttons[1], "Next", false, start < max_scroll, 13 * ui, ui);
+            chip(gl, g.cat_buttons[2], "Refresh", false, !cat.installing, 13 * ui, ui);
+            const char* hint = !confirm_native_id.empty()
+                                   ? "WARNING: Native C++ mods run unsandboxed. Click Confirm? to install."
+                                   : "Wheel/Arrows: scroll. R: refresh. Left/Right: switch view.";
+            gl.text(p.x + pad, win_h - pad - small, small, hint, !confirm_native_id.empty() ? kGold : kHint);
+            return;
+        }
+
         if (s.mods.empty()) {
-            gl.text(p.x + pad, g.tabs[0].y + g.tabs[0].h + 28 * ui, text, "No mods found.", kWhite);
-            gl.text(p.x + pad, g.tabs[0].y + g.tabs[0].h + 54 * ui, small, "Place mod folders in data/mods/", kHint);
-            gl.text(p.x + pad, g.tabs[0].y + g.tabs[0].h + 72 * ui, small, "with a mod.json file (docs/MODDING.md).", kHint);
+            const float ey = g.mod_subtabs[0].y + g.mod_subtabs[0].h + 24 * ui;
+            gl.text(p.x + pad, ey, text, "No mods installed.", kWhite);
+            gl.text(p.x + pad, ey + 26 * ui, small, "Click 'Browse Online' above to install mods,", kHint);
+            gl.text(p.x + pad, ey + 44 * ui, small, "or drop .phmod files into data/mods/.", kHint);
         } else {
             const int sel = std::clamp(selected_mod, 0, int(s.mods.size()) - 1);
             for (size_t i = 0; i < g.mod_rows.size() && i < s.mods.size(); i++) {
@@ -449,10 +659,22 @@ void Menu::draw_panel(GlPresenter& gl, const MenuState& s, float win_w, float wi
                 }
             }
         }
-        chip(gl, g.mod_reload_btn, "Reload mods (F6)", false, true, text, ui);
+        chip(gl, g.mod_reload_btn, "Reload (F6)", false, true, text * 0.9f, ui);
+        const bool has_sel = !s.mods.empty();
+        const bool is_rem_confirm = has_sel &&
+            confirm_remove_id == s.mods[size_t(std::clamp(selected_mod, 0, int(s.mods.size()) - 1))].id;
+        if (is_rem_confirm) {
+            gl.fill(g.mod_remove_btn, kDanger);
+            const std::string lbl = "Confirm?";
+            const float sz = std::min(text * 0.85f, (g.mod_remove_btn.w - 8 * ui) / float(lbl.size()));
+            gl.text(g.mod_remove_btn.x + (g.mod_remove_btn.w - sz * float(lbl.size())) / 2,
+                    g.mod_remove_btn.y + (g.mod_remove_btn.h - sz) / 2, sz, lbl, kWhite);
+        } else {
+            chip(gl, g.mod_remove_btn, "Remove", false, has_sel, text * 0.9f, ui);
+        }
         const char* mod_hint = capturing_hotkey
                                    ? "Press key, pad or mouse button. Backspace: clear. Esc: cancel."
-                                   : "Up/Down: select. Enter: toggle. R/F6: reload. Tab: page.";
+                                   : "Up/Down: select. Enter: toggle. R/F6: reload. Left/Right: Online.";
         gl.text(p.x + pad, win_h - pad - small, small, mod_hint, capturing_hotkey ? kGold : kHint);
         return;
     }
