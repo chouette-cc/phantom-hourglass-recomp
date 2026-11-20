@@ -14,6 +14,7 @@ Zelda: Phantom Hourglass* is © Nintendo. This project is not affiliated with or
 | SDL3 (fetched at build time) | [SDL](https://libsdl.org) | zlib |
 | `frontend/src/font8x8_basic.h` (the menu's text) | [font8x8](https://github.com/dhepper/font8x8) by Daniel Hepper, after the IBM VGA fonts | public domain |
 | `third_party/stb/stb_truetype.h` (TrueType rasterizer for HD text) | [stb](https://github.com/nothings/stb) by Sean Barrett | MIT / public domain |
+| `third_party/stb/stb_image.h`, `stb_image_write.h` (PNG loading/dumping for custom texture packs) | [stb](https://github.com/nothings/stb) by Sean Barrett | MIT / public domain |
 | `frontend/res/fonts/Inter-Bold.ttf` (optional HD dialogue font) | [Inter](https://github.com/rsms/inter) by Rasmus Andersson | SIL OFL 1.1 (`frontend/res/fonts/Inter-OFL.txt`) |
 | Function addresses and names in `frontend/config/azee/functions.txt` | the [zeldaret/ph](https://github.com/zeldaret/ph) decompilation project's dsd configuration | facts only (addresses, sizes, names) |
 

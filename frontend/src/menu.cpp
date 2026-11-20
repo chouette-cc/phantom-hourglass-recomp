@@ -13,7 +13,7 @@ constexpr uint32_t kShade = 0x55000000, kPanel = 0xF0181820, kRow = 0xFF2A2A34, 
                    kAccent = 0xFF8AB4FF, kWhite = 0xFFFFFFFF, kHint = 0xFF9090A0, kOff = 0xFF606068,
                    kEmpty = 0xFF121218;
 
-enum RowId { kScreen, kRenderer, kResolution, kTextures, kFixes, kPicture, kHdText, kSize, kWide, kFps, kFullscreen, kStick, kLanguage,
+enum RowId { kScreen, kRenderer, kResolution, kTextures, kCustomTextures, kFixes, kPicture, kHdText, kSize, kWide, kFps, kFullscreen, kStick, kLanguage,
              kContinue, kQuit, kRowCount };
 constexpr int kScales[] = {2, 4, 6, 8};
 constexpr int kUsaLanguages[] = {-1, 1, 2, 5};        // Auto, English, French, Spanish (AZEE)
@@ -51,6 +51,7 @@ Menu::Geometry Menu::geometry(const MenuState& s, float win_w, float win_h, floa
     }
     const bool gl = s.gpu && !s.compute;  // texture filtering is only implemented by the classic OpenGL renderer
     r[kTextures] = {"3D textures (GPU)", {"Pixels", "Smooth", "Sharp"}, gl ? s.textures : 0, {true, gl, gl}, {}, {}};
+    r[kCustomTextures] = {"Custom textures", {"Off", "On"}, s.custom_textures && s.gpu ? 1 : 0, {true, s.gpu}, {}, {}};
     // (Seams: the GPU renderer's better polygons. Warp: textures the DS bends with the view, cut into a grid.)
     r[kFixes] = {"3D fixes", {"Off", "Seams", "Warp", "Both"}, s.gpu ? s.fixes : s.fixes & 2, {true, s.gpu, true, s.gpu}, {}, {}};
     r[kPicture] = {"Picture", {"Sharp", "Smooth"}, s.smooth ? 1 : 0, {true, true}, {}, {}};
@@ -128,6 +129,10 @@ MenuResult Menu::choose(int row, int choice, MenuState& s) {
         case kTextures:
             if (choice != 0 && (!s.gpu || s.compute)) return MenuResult::None;
             s.textures = choice;
+            break;
+        case kCustomTextures:
+            if (choice == 1 && !s.gpu) return MenuResult::None;
+            s.custom_textures = choice == 1;
             break;
         case kFixes:
             if ((choice & 1) && !s.gpu) return MenuResult::None;

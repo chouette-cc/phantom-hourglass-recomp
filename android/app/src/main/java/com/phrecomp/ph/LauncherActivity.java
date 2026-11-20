@@ -204,6 +204,16 @@ public final class LauncherActivity extends Activity {
             if (error != null) look.dialog().setMessage(error).setPositiveButton("OK", null).show();
             return;
         }
+        if (request == LauncherLook.REQUEST_TEXPACK) {
+            new Thread(() -> {
+                final String message = look.importTexturePack(uri, prefs());
+                runOnUiThread(() -> {
+                    refresh();
+                    look.dialog().setMessage(message).setPositiveButton("OK", null).show();
+                });
+            }).start();
+            return;
+        }
         // Large copies off the UI thread.
         new Thread(() -> {
             String message;

@@ -19,6 +19,7 @@
 //                        [--fullscreen] [--unpaced] [--module M] [--read-only-save] [--renderer software|gpu|compute]
 //                        [--scale 2|4|6|8] [--continue] [--wide] [--wide21] [--textures pixels|smooth|sharp]
 //                        [--fixes 0-3] [--language auto|en|fr|de|it|es] [--hd-text]
+//                        [--custom-textures] [--dump-textures] [--textures-dir D]
 #include <SDL3/SDL.h>
 #ifdef __ANDROID__
 #include <SDL3/SDL_main.h>  // (SDL's Android activity calls SDL_main in libmain.so)
@@ -48,6 +49,7 @@
 #include "layout.hpp"
 #include "ntr/rom.hpp"
 #include "ntr/runtime.hpp"
+#include "ntr/texpack.hpp"
 #include "pad_input.hpp"
 #include "ph_stick.hpp"
 #include "ph_hooks.hpp"
@@ -86,6 +88,7 @@ std::atomic<bool> compute_failed{false};
 std::atomic<bool> resume_done{false};
 std::atomic<int> wide_mode{-1};
 std::atomic<int> hd_text{-1};
+std::atomic<int> custom_textures{-1};
 }  // namespace ph::pad
 
 namespace {
@@ -222,6 +225,7 @@ struct Settings {
     int fixes = 0;        // 3D fixes, bits: 1 fewer seams (GPU renderer's better polygons), 2 stable textures (no warp)
     int language = kLangAuto;  // DS firmware language: -1 auto (system locale), 0-5 explicit DS code
     bool hd_text = false; // render OBJ dialogue text with an embedded vector TrueType font
+    bool custom_textures = false;  // load custom HD textures from <data>/textures/load/ (GPU and Compute renderers)
 };
 
 Settings load_settings(const fs::path& p) {
@@ -251,6 +255,7 @@ Settings load_settings(const fs::path& p) {
             if (parsed >= kLangAuto) s.language = parsed;
         }
         else if (k == "hd_text") s.hd_text = v == "1";
+        else if (k == "custom_textures") s.custom_textures = v == "1";
     }
     if (std::find(std::begin(kScales), std::end(kScales), s.scale) == std::end(kScales)) s.scale = 4;
     return s;
@@ -277,6 +282,7 @@ void save_settings(const fs::path& p, const Settings& s) {
     f << "fixes=" << s.fixes << "\n";
     f << "language=" << language_name(s.language) << "\n";
     f << "hd_text=" << (s.hd_text ? 1 : 0) << "\n";
+    f << "custom_textures=" << (s.custom_textures ? 1 : 0) << "\n";
 }
 
 ntr::VideoSettings video_for(const Settings& s) {
@@ -796,6 +802,7 @@ private:
             ms.language = view.language;
             ms.europe = s_.europe;
             ms.hd_text = view.hd_text;
+            ms.custom_textures = view.custom_textures;
             const int layer = view.layout == Layout::Top ? 0 : 1;  // the screen the player looks at
             menu.draw(*gl_, ms, float(w), float(h), ui, float(ph::pad::game_fps10.load()) / 10.0f,
                       [&](int slot, const ph::Rect& r) { gl_->thumbnail(slot, layer, r); });
@@ -979,10 +986,10 @@ void error_box(const std::string& text, SDL_Window* window = nullptr) {
 
 int main(int argc, char** argv) {
     // ---- arguments ----
-    fs::path rom_path, save_path, data_dir, script_path, module_path = ph::default_module_path();
+    fs::path rom_path, save_path, data_dir, script_path, textures_dir, module_path = ph::default_module_path();
     uint64_t exit_after = 0;
     bool fullscreen_arg = false, unpaced = false, read_only_save = false, continue_arg = false, wide_arg = false, wide21_arg = false;
-    bool fps_probe_arg = false, hd_text_arg = false;
+    bool fps_probe_arg = false, hd_text_arg = false, custom_textures_arg = false, dump_textures_arg = false;
     std::string renderer_arg, textures_arg;
     int scale_arg = 0, fixes_arg = -1, language_arg = -2;
     for (int i = 1; i < argc; i++) {
@@ -1012,6 +1019,9 @@ int main(int argc, char** argv) {
             }
         }
         else if (a == "--hd-text") hd_text_arg = true;
+        else if (a == "--custom-textures") custom_textures_arg = true;
+        else if (a == "--dump-textures") dump_textures_arg = true;
+        else if (a == "--textures-dir" && has) textures_dir = argv[++i];
         else if (a == "--no-settings") {}  // (accepted: tests never write settings anyway, see below)
         else if (!a.empty() && a[0] != '-' && rom_path.empty()) rom_path = a;
         else {
@@ -1080,6 +1090,7 @@ int main(int argc, char** argv) {
     if (fixes_arg >= 0 && fixes_arg <= 3) settings.fixes = fixes_arg;
     if (language_arg >= kLangAuto) settings.language = language_arg;
     if (hd_text_arg) settings.hd_text = true;
+    if (custom_textures_arg) settings.custom_textures = true;
     // "opengl" = "gpu" (melonDS's OpenGL renderer), the name ST and phoneperf use.
     if (renderer_arg == "gpu" || renderer_arg == "opengl") settings.gpu = true, settings.compute = false;
     else if (renderer_arg == "compute") settings.gpu = settings.compute = true;
@@ -1091,6 +1102,9 @@ int main(int argc, char** argv) {
     ph::pad::fps = settings.fps;
     ph::pad::fps_corner = settings.fps_corner;
     ph::set_hd_text_enabled(settings.hd_text);
+    ntr::texpack::set_root(textures_dir.empty() ? (data_dir / "textures").string() : textures_dir.string());
+    ntr::texpack::set_enabled(settings.custom_textures);
+    ntr::texpack::set_dump(dump_textures_arg);
 
     // ---- window: the largest whole multiple of the DS screen that fits the desktop with room to spare ----
     SDL_Rect usable{0, 0, 1280, 720};
@@ -1224,6 +1238,7 @@ int main(int argc, char** argv) {
         ms.language = settings.language;
         ms.europe = is_europe;
         ms.hd_text = settings.hd_text;
+        ms.custom_textures = settings.custom_textures;
         return ms;
     };
     auto menu_done = [&](const ph::MenuState& ms, ph::MenuResult r) {
@@ -1244,6 +1259,10 @@ int main(int argc, char** argv) {
         if (ms.hd_text != settings.hd_text) {
             settings.hd_text = ms.hd_text;
             ph::set_hd_text_enabled(settings.hd_text);
+        }
+        if (ms.custom_textures != settings.custom_textures) {
+            settings.custom_textures = ms.custom_textures;
+            ntr::texpack::set_enabled(settings.custom_textures);
         }
         if (ms.fullscreen != settings.fullscreen) set_fullscreen(ms.fullscreen);
         ph::pad::fps = settings.fps;
@@ -1405,6 +1424,11 @@ int main(int argc, char** argv) {
         }
         if (const int want = ph::pad::textures.exchange(-1); want >= 0 && want <= 2 && want != settings.textures)
             settings.textures = want, changed = video = true;
+        if (const int want = ph::pad::custom_textures.exchange(-1); want >= 0) {
+            settings.custom_textures = want != 0;
+            ntr::texpack::set_enabled(settings.custom_textures);
+            changed = true;
+        }
         if (const int want = ph::pad::fixes.exchange(-1); want >= 0 && want <= 3 && want != settings.fixes)
             settings.fixes = want, changed = video = true;
         if (const int want = ph::pad::compute.exchange(-1); want >= 0 && (want != 0) != settings.compute)
@@ -1523,6 +1547,7 @@ int main(int argc, char** argv) {
 
     shared.quit = true;
     SDL_WaitThread(thread, nullptr);
+    ntr::texpack::flush_dumps();
 #ifdef __ANDROID__
     if (lifecycle_watch_registered) SDL_RemoveEventWatch(watch_android_lifecycle, &shared);
 #endif

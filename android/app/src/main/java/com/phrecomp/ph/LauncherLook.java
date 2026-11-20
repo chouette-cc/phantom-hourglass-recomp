@@ -31,6 +31,8 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 /**
  * The start screen's look (2026-11-18), shared by the DS ports (copy this file as it is, only the package line
@@ -43,7 +45,9 @@ import java.io.OutputStream;
  */
 final class LauncherLook {
     static final int REQUEST_BACKGROUND = 41;
+    static final int REQUEST_TEXPACK = 42;
     private static final String BG_FILE = "launcher_bg.img";
+    private static final String TEXPACK_DIR = "textures/load";
     private static final int MENU_WIDTH_DP = 440;
 
     private final Activity a;
@@ -235,6 +239,7 @@ final class LauncherLook {
         if (gpu) b.append(" · ").append(Math.max(1, Math.min(4, p.getInt("scale", 2)))).append("×");
         if (p.getBoolean("smooth", false)) b.append(" · smooth");
         if (p.getBoolean("hd_text", false)) b.append(" · HD text");
+        if (p.getBoolean("custom_textures", false)) b.append(" · custom tex");
         if (p.getBoolean("stretch", false)) b.append(" · stretched");
         b.append(p.getBoolean("portrait", false) ? " · upright" : " · sideways");
         String lang = p.getString("language", "auto");
@@ -250,52 +255,194 @@ final class LauncherLook {
         final String[] langValues = eur ? EUR_LANG_VALUES : USA_LANG_VALUES;
         final String[] langLabels = eur ? EUR_LANG_LABELS : USA_LANG_LABELS;
         final int lang = langIndex(langValues, p.getString("language", "auto"));
-        String[] items = {
-                "Renderer: " + (gpu ? "GPU" : "Software"),
-                "Resolution: " + scale + "×" + (gpu ? "" : " (GPU only)"),
-                "Language: " + langLabels[lang],
-                (p.getBoolean("smooth", false) ? "✓ " : "   ") + "Smooth picture",
-                (p.getBoolean("hd_text", false) ? "✓ " : "   ") + "HD dialogue text",
-                (p.getBoolean("stretch", false) ? "✓ " : "   ") + "Stretch to fill the screen",
-                (p.getBoolean("portrait", false) ? "✓ " : "   ") + "Hold the phone upright (both screens stacked)",
-                "Choose background image…",
-                hasCustomBackground() ? "Use the game's cover again" : null,
-        };
-        int n = items[8] == null ? 8 : 9;
-        String[] shown = java.util.Arrays.copyOf(items, n);
-        dialog().setTitle("Settings").setItems(shown, (d, w) -> {
-            switch (w) {
-                case 0: p.edit().putBoolean("gpu", !gpu).apply(); break;
-                case 1: {
-                    String[] choices = {"1× (DS original)", "2×", "3×", "4×"};
-                    dialog().setTitle("Resolution").setSingleChoiceItems(choices, scale - 1, (x, which) -> {
-                        x.dismiss();
-                        p.edit().putInt("scale", which + 1).apply();
-                        changed.run();
-                        settings(p, gpuDefault, changed);
-                    }).setNegativeButton("Back", null).show();
-                    return;
-                }
-                case 2: {
-                    dialog().setTitle("Language").setSingleChoiceItems(langLabels, lang, (x, which) -> {
-                        x.dismiss();
-                        p.edit().putString("language", langValues[which]).apply();
-                        changed.run();
-                        settings(p, gpuDefault, changed);
-                    }).setNegativeButton("Back", null).show();
-                    return;
-                }
-                case 3: p.edit().putBoolean("smooth", !p.getBoolean("smooth", false)).apply(); break;
-                case 4: p.edit().putBoolean("hd_text", !p.getBoolean("hd_text", false)).apply(); break;
-                case 5: p.edit().putBoolean("stretch", !p.getBoolean("stretch", false)).apply(); break;
-                case 6: p.edit().putBoolean("portrait", !p.getBoolean("portrait", false)).apply(); break;
-                case 7: pickBackground(); return;
-                case 8: clearBackground(); changed.run(); return;
-                default: return;
+        final boolean hasPack = hasTexturePack();
+        final boolean hasBg = hasCustomBackground();
+        final java.util.ArrayList<String> list = new java.util.ArrayList<>();
+        list.add("Renderer: " + (gpu ? "GPU" : "Software"));
+        list.add("Resolution: " + scale + "×" + (gpu ? "" : " (GPU only)"));
+        list.add("Language: " + langLabels[lang]);
+        list.add((p.getBoolean("smooth", false) ? "✓ " : "   ") + "Smooth picture");
+        list.add((p.getBoolean("hd_text", false) ? "✓ " : "   ") + "HD dialogue text");
+        list.add((p.getBoolean("custom_textures", false) ? "✓ " : "   ") + "Custom textures (GPU / Compute)");
+        list.add((p.getBoolean("stretch", false) ? "✓ " : "   ") + "Stretch to fill the screen");
+        list.add((p.getBoolean("portrait", false) ? "✓ " : "   ") + "Hold the phone upright (both screens stacked)");
+        final int idxImportPack = list.size();
+        list.add("Import texture pack (.zip)…");
+        final int idxRemovePack = hasPack ? list.size() : -1;
+        if (hasPack) list.add("Remove texture pack");
+        final int idxPickBg = list.size();
+        list.add("Choose background image…");
+        final int idxClearBg = hasBg ? list.size() : -1;
+        if (hasBg) list.add("Use the game's cover again");
+
+        dialog().setTitle("Settings").setItems(list.toArray(new String[0]), (d, w) -> {
+            if (w == 0) {
+                p.edit().putBoolean("gpu", !gpu).apply();
+            } else if (w == 1) {
+                String[] choices = {"1× (DS original)", "2×", "3×", "4×"};
+                dialog().setTitle("Resolution").setSingleChoiceItems(choices, scale - 1, (x, which) -> {
+                    x.dismiss();
+                    p.edit().putInt("scale", which + 1).apply();
+                    changed.run();
+                    settings(p, gpuDefault, changed);
+                }).setNegativeButton("Back", null).show();
+                return;
+            } else if (w == 2) {
+                dialog().setTitle("Language").setSingleChoiceItems(langLabels, lang, (x, which) -> {
+                    x.dismiss();
+                    p.edit().putString("language", langValues[which]).apply();
+                    changed.run();
+                    settings(p, gpuDefault, changed);
+                }).setNegativeButton("Back", null).show();
+                return;
+            } else if (w == 3) {
+                p.edit().putBoolean("smooth", !p.getBoolean("smooth", false)).apply();
+            } else if (w == 4) {
+                p.edit().putBoolean("hd_text", !p.getBoolean("hd_text", false)).apply();
+            } else if (w == 5) {
+                p.edit().putBoolean("custom_textures", !p.getBoolean("custom_textures", false)).apply();
+            } else if (w == 6) {
+                p.edit().putBoolean("stretch", !p.getBoolean("stretch", false)).apply();
+            } else if (w == 7) {
+                p.edit().putBoolean("portrait", !p.getBoolean("portrait", false)).apply();
+            } else if (w == idxImportPack) {
+                pickTexturePack();
+                return;
+            } else if (w == idxRemovePack) {
+                clearTexturePack();
+                p.edit().putBoolean("custom_textures", false).apply();
+                changed.run();
+                return;
+            } else if (w == idxPickBg) {
+                pickBackground();
+                return;
+            } else if (w == idxClearBg) {
+                clearBackground();
+                changed.run();
+                return;
+            } else {
+                return;
             }
             changed.run();
             settings(p, gpuDefault, changed);
         }).setNegativeButton("Done", null).show();
+    }
+
+    // ---- texture pack (.zip imported into files/textures/load/) ----
+
+    boolean hasTexturePack() {
+        File dir = new File(a.getFilesDir(), TEXPACK_DIR);
+        return countImages(dir) > 0;
+    }
+
+    private static int countImages(File dir) {
+        if (dir == null || !dir.isDirectory()) return 0;
+        File[] files = dir.listFiles();
+        if (files == null) return 0;
+        int n = 0;
+        for (File f : files) {
+            if (f.isDirectory()) n += countImages(f);
+            else if (isImageName(f.getName())) n++;
+        }
+        return n;
+    }
+
+    private static boolean isImageName(String name) {
+        String l = name.toLowerCase(java.util.Locale.US);
+        return l.endsWith(".png") || l.endsWith(".jpg") || l.endsWith(".jpeg") || l.endsWith(".bmp") || l.endsWith(".tga");
+    }
+
+    private static void deleteTree(File f) {
+        if (f == null || !f.exists()) return;
+        if (f.isDirectory()) {
+            File[] kids = f.listFiles();
+            if (kids != null) for (File k : kids) deleteTree(k);
+        }
+        //noinspection ResultOfMethodCallIgnored
+        f.delete();
+    }
+
+    void clearTexturePack() {
+        deleteTree(new File(a.getFilesDir(), TEXPACK_DIR));
+    }
+
+    void pickTexturePack() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("application/zip");
+        i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/zip", "application/x-zip-compressed", "application/octet-stream"});
+        try {
+            a.startActivityForResult(i, REQUEST_TEXPACK);
+        } catch (Exception e) {
+            dialog().setMessage("No file picker available").setPositiveButton("OK", null).show();
+        }
+    }
+
+    /** Extracts image files from a texture pack .zip into files/textures/load/. Returns a user-facing status message. */
+    String importTexturePack(Uri uri, SharedPreferences prefs) {
+        File dest = new File(a.getFilesDir(), TEXPACK_DIR);
+        File tmp = new File(a.getFilesDir(), "textures/load.tmp");
+        deleteTree(tmp);
+        //noinspection ResultOfMethodCallIgnored
+        tmp.mkdirs();
+        int count = 0;
+        long totalBytes = 0;
+        final long maxTotal = 512L << 20;  // 512 MB cap
+        try (InputStream raw = a.getContentResolver().openInputStream(uri);
+             ZipInputStream zin = new ZipInputStream(raw)) {
+            if (raw == null) throw new IOException("cannot open the file");
+            String tmpCanon = tmp.getCanonicalPath() + File.separator;
+            byte[] buf = new byte[1 << 16];
+            ZipEntry entry;
+            while ((entry = zin.getNextEntry()) != null) {
+                if (entry.isDirectory()) continue;
+                String name = entry.getName().replace('\\', '/');
+                if (name.startsWith("/") || name.contains("..")) continue;
+                if (name.startsWith("__MACOSX/")) continue;
+                if (!isImageName(name)) continue;
+                // Normalize optional leading "load/" or single pack folder before obj/bg/3d.
+                String lower = name.toLowerCase(java.util.Locale.US);
+                for (String sub : new String[]{"/obj/", "/bg/", "/3d/"}) {
+                    int pos = lower.indexOf(sub);
+                    if (pos >= 0) {
+                        name = name.substring(pos + 1);
+                        break;
+                    }
+                }
+                File out = new File(tmp, name);
+                if (!out.getCanonicalPath().startsWith(tmpCanon)) continue;
+                File parent = out.getParentFile();
+                if (parent != null) {
+                    //noinspection ResultOfMethodCallIgnored
+                    parent.mkdirs();
+                }
+                try (OutputStream fout = new FileOutputStream(out)) {
+                    int n;
+                    while ((n = zin.read(buf)) > 0) {
+                        totalBytes += n;
+                        if (totalBytes > maxTotal) throw new IOException("the texture pack is too large (over 512 MB)");
+                        fout.write(buf, 0, n);
+                    }
+                }
+                count++;
+            }
+        } catch (IOException e) {
+            deleteTree(tmp);
+            return "Could not import texture pack: " + e.getMessage();
+        }
+        if (count == 0) {
+            deleteTree(tmp);
+            return "No texture images (.png) were found in that .zip file.";
+        }
+        deleteTree(dest);
+        //noinspection ResultOfMethodCallIgnored
+        dest.getParentFile().mkdirs();
+        if (!tmp.renameTo(dest)) {
+            deleteTree(tmp);
+            return "Could not save the imported texture pack.";
+        }
+        prefs.edit().putBoolean("custom_textures", true).apply();
+        return "Imported " + count + " custom texture" + (count == 1 ? "" : "s") + " (Custom textures turned on).";
     }
 
     // ---- background picture ----

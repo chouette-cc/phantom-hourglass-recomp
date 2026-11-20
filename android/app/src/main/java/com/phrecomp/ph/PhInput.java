@@ -62,6 +62,9 @@ public final class PhInput {
     /** The 3D's textures with the GPU renderer: 0 the DS's pixels, 1 smooth, 2 sharp (crisp, soft only between texels). */
     public static native void nativeSetTextures(int mode);
 
+    /** Load custom HD replacement textures from files/textures/load/ (GPU and Compute renderers). */
+    public static native void nativeSetCustomTextures(boolean on);
+
     /** Widescreen mode: 0 off, 1 16:9, 2 21:9. */
     public static native void nativeSetWide(int mode);
 

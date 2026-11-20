@@ -60,6 +60,7 @@ public class GameActivity extends SDLActivity {
         args.add("--language");
         args.add(prefs.getString("language", "auto"));
         if (prefs.getBoolean("hd_text", false)) args.add("--hd-text");
+        if (hardware && prefs.getBoolean("custom_textures", false)) args.add("--custom-textures");
         return args.toArray(new String[0]);
     }
 
@@ -118,6 +119,7 @@ public class GameActivity extends SDLActivity {
         // The display choices kept from last time.
         PhInput.nativeSetSmooth(prefs.getBoolean("smooth", false));
         PhInput.nativeSetHdText(prefs.getBoolean("hd_text", false));
+        PhInput.nativeSetCustomTextures(prefs.getBoolean("custom_textures", false));
         PhInput.nativeSetFps(false);  // (the phone's counter is the FpsBadge, not drawn in the picture)
         setFpsShown(prefs.getBoolean("fps", false));
         PhInput.nativeSetStretch(prefs.getBoolean("stretch", false));

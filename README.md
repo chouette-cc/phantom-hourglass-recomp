@@ -23,6 +23,9 @@ and sound hardware) comes from the [melonDS](https://github.com/melonDS-emu/melo
   filtering. The PC menu includes optional 3D seam and texture stability fixes.
 - **HD text**: optional vector dialogue text rendering at native display resolution using the bundled Inter Bold
   TrueType font, preserving the game's layout, colors, and special symbols on both PC and Android.
+- **Custom texture packs**: optional HD replacement of 2D sprites/UI (`obj`), 2D backgrounds (`bg`), and 3D textures
+  (`3d`) loaded from the player's own `<data>/textures/load/` folder (or imported as a `.zip` on Android), with
+  built-in texture dumping (`--dump-textures`). See [docs/TEXTURE-PACKS.md](docs/TEXTURE-PACKS.md).
 - **Widescreen**: Compute rendering can expand the view to 16:9 or 21:9. The HUD follows the wide view and moved HUD
   areas continue to respond to touch. At 21:9, some scenery and other elements can pop into view near the edges because
   the game's visibility checks were designed for 4:3.

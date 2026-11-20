@@ -40,6 +40,7 @@ struct MenuState {
     int language = -1;         // DS firmware language: -1 auto (system locale), 1 EN, 2 FR, 3 DE, 4 IT, 5 ES
     bool europe = false;       // AZEP (Europe) ROM: also carries German and Italian
     bool hd_text = false;      // HD vector dialogue text (Inter Bold TrueType font)
+    bool custom_textures = false;  // load HD replacement textures from <data>/textures/load/
 };
 
 enum class MenuResult { None, Changed, Quit, SaveState, LoadState, Continue };
