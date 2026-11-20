@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "mod_catalog.hpp"
 #include "mod_json.hpp"
 #include "mod_manager.hpp"
 #include "mod_romfs.hpp"
@@ -404,6 +405,71 @@ void test_full_three_tier_mod_system(const fs::path& root) {
     std::fprintf(stderr, "[PASS] test_full_three_tier_mod_system (Asset + Native C++ .phmod + Lua 5.4 + Hooks + Services)\n");
 }
 
+void test_mod_catalog(const fs::path& tmp_root) {
+    // 1. FIPS 180-4 SHA-256 test vectors
+    CHECK(ph::sha256_hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    CHECK(ph::sha256_hex("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    CHECK(ph::sha256_hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") ==
+          "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+
+    // 2. Version comparison
+    CHECK(ph::compare_mod_versions("1.0.0", "1.0.0") == 0);
+    CHECK(ph::compare_mod_versions("v1.2.0", "1.10.0") < 0);
+    CHECK(ph::compare_mod_versions("2.0", "1.9.9") > 0);
+
+    // 3. Offline file:// catalog fetch, SHA-256 verification, install, load, and uninstall
+    const fs::path cat_root = tmp_root / "catalog_test";
+    const fs::path mods_dir = cat_root / "mods";
+    std::error_code ec;
+    fs::remove_all(cat_root, ec);
+    fs::create_directories(mods_dir);
+
+    // Reuse an already-built .phmod bundle from PH_TEST_BUNDLES_DIR
+    const fs::path bundle_src = fs::path(PH_TEST_BUNDLES_DIR) / "test_provider_mod.phmod";
+    CHECK(fs::is_regular_file(bundle_src));
+    std::ifstream bf(bundle_src, std::ios::binary);
+    std::string bbytes((std::istreambuf_iterator<char>(bf)), std::istreambuf_iterator<char>());
+    const std::string good_sha = ph::sha256_hex(bbytes);
+    const std::string bad_sha(64, '0');
+
+    auto to_file_url = [](const fs::path& p) {
+        std::string s = p.generic_string();
+        if (!s.empty() && s[0] != '/') s = "/" + s;
+        return "file://" + s;
+    };
+    const std::string pkg_url = to_file_url(bundle_src);
+    const std::string cat_json =
+        std::string("{\"schema\":1,\"name\":\"Local Test Catalog\",\"mods\":[") +
+        "{\"id\":\"com.phrecomp.test.provider\",\"name\":\"Test Provider\",\"version\":\"1.0.0\"," +
+        "\"kind\":\"native\",\"author\":\"Tester\",\"description\":\"Catalog test\"," +
+        "\"download_url\":\"" + pkg_url + "\",\"sha256\":\"" + good_sha + "\"}]}";
+    const fs::path cat_file = cat_root / "catalog.json";
+    { std::ofstream f(cat_file, std::ios::binary); f << cat_json; }
+
+    std::vector<uint8_t> fetched;
+    std::string err;
+    CHECK(ph::fetch_url_bytes(to_file_url(cat_file), fetched, err));
+    std::string cat_name;
+    std::vector<ph::CatalogModEntry> entries;
+    CHECK(ph::parse_mod_catalog(std::string(reinterpret_cast<const char*>(fetched.data()), fetched.size()),
+                                cat_name, entries, err));
+    CHECK(cat_name == "Local Test Catalog" && entries.size() == 1);
+
+    // SHA-256 mismatch must be rejected
+    ph::CatalogModEntry bad = entries[0];
+    bad.sha256 = bad_sha;
+    CHECK(!ph::install_catalog_mod(bad, mods_dir, err));
+    CHECK(err.find("SHA-256") != std::string::npos);
+    CHECK(!fs::exists(mods_dir / "com.phrecomp.test.provider.phmod"));
+
+    // Matching SHA-256 installs cleanly & can be discovered and uninstalled
+    CHECK(ph::install_catalog_mod(entries[0], mods_dir, err));
+    CHECK(fs::is_regular_file(mods_dir / "com.phrecomp.test.provider.phmod"));
+    CHECK(ph::uninstall_mod_bundle(mods_dir, "com.phrecomp.test.provider", err));
+    CHECK(!fs::exists(mods_dir / "com.phrecomp.test.provider.phmod"));
+    std::fprintf(stderr, "[PASS] test_mod_catalog (SHA-256 + JSON catalog + install/verify/uninstall)\n");
+}
+
 }  // namespace
 
 int main() {
@@ -411,6 +477,7 @@ int main() {
     const fs::path tmp = fs::temp_directory_path() / "ph_recomp_mod_tests";
     fs::create_directories(tmp);
     test_full_three_tier_mod_system(tmp);
+    test_mod_catalog(tmp);
     std::error_code ec;
     fs::remove_all(tmp, ec);
     std::fprintf(stderr, "ALL MOD TESTS PASSED\n");

@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "Phantom Hourglass Recomp Community Mods",
+  "mods": [
+    {
+      "id": "com.phrecomp.single-screen",
+      "name": "Single Screen (Modern HUD)",
+      "version": "1.0.0",
+      "kind": "lua",
+      "author": "PH Recomp Community",
+      "description": "Play Phantom Hourglass on one screen with a sleek minimap PiP, automatic clean map crop, and customizable top-screen peek.",
+      "download_url": "https://github.com/chouette-cc/ph-recomp-mods/releases/download/single-screen-v1.0.0/single-screen.phmod",
+      "sha256": "",
+      "tags": ["hud", "single-screen", "lua"],
+      "regions": ["AZEE", "AZEP"],
+      "homepage": "https://github.com/chouette-cc/ph-recomp-mods"
+    }
+  ]
+}

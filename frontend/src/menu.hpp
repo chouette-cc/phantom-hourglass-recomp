@@ -12,6 +12,7 @@
 
 #include "achievements.hpp"
 #include "layout.hpp"
+#include "mod_catalog.hpp"
 #include "mod_manager.hpp"
 
 namespace ph {
@@ -45,17 +46,23 @@ struct MenuState {
     bool custom_textures = false;  // load HD replacement textures from <data>/textures/load/
     // Mods page:
     std::vector<ModSummary> mods;
+    ModCatalogSnapshot catalog;
     int selected_mod = 0;
     std::string action_mod_id;
     std::string action_cfg_key;
     std::string action_cfg_str;
     int action_cfg_dir = 0;
     bool action_mod_enable = false;
+    CatalogModEntry action_catalog_mod;
     // Achievements page:
     AchievementsSnapshot achievements{};
 };
 
-enum class MenuResult { None, Changed, Quit, SaveState, LoadState, Continue, ToggleMod, StepModConfig, SetModConfigString, ReloadMods, ResetAchievements };
+enum class MenuResult {
+    None, Changed, Quit, SaveState, LoadState, Continue,
+    ToggleMod, StepModConfig, SetModConfigString, ReloadMods,
+    RefreshCatalog, InstallCatalogMod, UninstallMod, ResetAchievements
+};
 
 class Menu {
 public:
@@ -63,6 +70,10 @@ public:
     int page = 0;  // 0 Settings, 1 Save states, 2 Mods, 3 Achievements
     int selected = 0;
     int selected_mod = 0;
+    int mod_subpage = 0;       // 0 Installed, 1 Browse Online
+    int catalog_scroll = 0;
+    std::string confirm_native_id;
+    std::string confirm_remove_id;
     bool capturing_hotkey = false;
     std::string capture_mod_id;
     std::string capture_cfg_key;
@@ -117,10 +128,15 @@ private:
         std::array<Rect, kStateSlots> thumbs{};
         std::array<Rect, 2> buttons{};
         // Mods page:
+        std::array<Rect, 2> mod_subtabs{};
         std::vector<ModRowGeom> mod_rows;
         std::vector<ModCfgGeom> mod_cfgs;
         Rect mod_info_rect;
         Rect mod_reload_btn;
+        Rect mod_remove_btn;
+        // Mods Browse Online subpage:
+        Rect cat_list;
+        std::array<Rect, 3> cat_buttons{};  // 0 Prev, 1 Next, 2 Refresh
         // Achievements page: filter chips (All/Unlocked/Locked), scroll buttons (Prev/Next), Reset button
         std::array<Rect, 3> ach_filters{};
         std::array<Rect, 3> ach_buttons{};      // 0 Prev, 1 Next, 2 Reset

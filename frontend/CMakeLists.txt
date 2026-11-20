@@ -43,7 +43,7 @@ if(ANDROID)
   # SDL's Android activity loads the program as libmain.so and calls its SDL_main.
   add_library(main SHARED src/main.cpp src/game_module.cpp src/ph_hooks.cpp src/ph_stick.cpp src/ph_text.cpp
               ${PH_HD_FONT_SRC} src/png.cpp src/android_bridge.cpp src/gl_present.cpp src/gles_compat.cpp
-              src/mod_bundle.cpp src/mod_romfs.cpp src/mod_manager.cpp src/achievements.cpp)
+              src/mod_bundle.cpp src/mod_catalog.cpp src/mod_romfs.cpp src/mod_manager.cpp src/achievements.cpp)
   target_include_directories(main PRIVATE src ${CMAKE_SOURCE_DIR}/third_party/stb)
   target_compile_options(main PRIVATE -O2)
   target_link_libraries(main PRIVATE ntr_runtime ntr_common ph_mods_sdk lua_core miniz_core SDL3::SDL3-static android log dl
@@ -105,7 +105,7 @@ endif()
 # ---- the program ----
 add_executable(PhantomHourglass src/main.cpp src/game_module.cpp src/ph_hooks.cpp src/ph_stick.cpp src/ph_text.cpp
                ${PH_HD_FONT_SRC} src/png.cpp src/gl_present.cpp src/menu.cpp
-               src/mod_bundle.cpp src/mod_romfs.cpp src/mod_manager.cpp src/achievements.cpp)
+               src/mod_bundle.cpp src/mod_catalog.cpp src/mod_romfs.cpp src/mod_manager.cpp src/achievements.cpp)
 target_include_directories(PhantomHourglass PRIVATE src ${CMAKE_SOURCE_DIR}/third_party/stb)
 set_target_properties(PhantomHourglass PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 if(PH_ROM)
@@ -124,7 +124,7 @@ if(WIN32)
   enable_language(RC)
   target_sources(PhantomHourglass PRIVATE app.rc)
   set_source_files_properties(app.rc PROPERTIES OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/res/app.ico)
-  target_link_libraries(PhantomHourglass PRIVATE opengl32 user32 advapi32 shell32 ws2_32 iphlpapi)
+  target_link_libraries(PhantomHourglass PRIVATE opengl32 user32 advapi32 shell32 ws2_32 iphlpapi winhttp)
   # A windowed program (no console window behind it); its output still goes to a redirected stdout/stderr.
   if(MSVC)
     target_link_options(PhantomHourglass PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)

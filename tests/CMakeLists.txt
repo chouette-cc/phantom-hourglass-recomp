@@ -33,6 +33,7 @@ if(TARGET lua_core AND TARGET miniz_core AND TARGET ph_mods_sdk)
 
   add_executable(test_mods test_mods.cpp
                  ${PROJECT_SOURCE_DIR}/frontend/src/mod_bundle.cpp
+                 ${PROJECT_SOURCE_DIR}/frontend/src/mod_catalog.cpp
                  ${PROJECT_SOURCE_DIR}/frontend/src/mod_manager.cpp
                  ${PROJECT_SOURCE_DIR}/frontend/src/mod_romfs.cpp)
   add_dependencies(test_mods test_provider_mod test_consumer_mod)
@@ -42,7 +43,9 @@ if(TARGET lua_core AND TARGET miniz_core AND TARGET ph_mods_sdk)
                              ${PROJECT_SOURCE_DIR}/runtime/include
                              ${PROJECT_SOURCE_DIR}/common/include)
   target_link_libraries(test_mods PRIVATE ntr_common ph_mods_sdk lua_core miniz_core SDL3::Headers)
-  if(NOT WIN32)
+  if(WIN32)
+    target_link_libraries(test_mods PRIVATE winhttp)
+  else()
     target_link_libraries(test_mods PRIVATE dl)
   endif()
   add_test(NAME mods COMMAND test_mods)
