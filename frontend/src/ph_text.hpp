@@ -32,6 +32,9 @@ struct HdGlyph {
 void set_hd_text_enabled(bool enabled);
 bool hd_text_enabled();
 
+// Selects per-region OAM manager and engine-flag addresses (called by ph::select_release).
+void hd_text_set_addresses(uint32_t oam_mgr_a, uint32_t oam_mgr_b, uint32_t single_engine_flag);
+
 // Initialized stb_truetype handle for the embedded HD font (nullptr if init failed).
 const stbtt_fontinfo* hd_font_info();
 

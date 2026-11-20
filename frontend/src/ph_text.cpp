@@ -15,9 +15,9 @@
 namespace ph {
 namespace {
 
-constexpr uint32_t kOamMgrEngineA = 0x02063DECu;
-constexpr uint32_t kOamMgrEngineB = 0x020660C0u;
-constexpr uint32_t kSingleEngineFlag = 0x027E0C54u;
+uint32_t g_oam_mgr_a = 0x02063DECu;
+uint32_t g_oam_mgr_b = 0x020660C0u;
+uint32_t g_single_engine_flag = 0x027E0C54u;
 constexpr uint32_t kDispCntA = 0x04000000u;
 constexpr uint32_t kDispCntB = 0x04001000u;
 constexpr uint32_t kMasterBrightA = 0x0400006Cu;
@@ -190,6 +190,12 @@ bool is_whitespace(uint16_t cp) {
 
 }  // namespace
 
+void hd_text_set_addresses(uint32_t oam_mgr_a, uint32_t oam_mgr_b, uint32_t single_engine_flag) {
+    g_oam_mgr_a = oam_mgr_a;
+    g_oam_mgr_b = oam_mgr_b;
+    g_single_engine_flag = single_engine_flag;
+}
+
 void set_hd_text_enabled(bool enabled) {
     g_enabled.store(enabled, std::memory_order_relaxed);
 }
@@ -323,7 +329,7 @@ extern "C" void ph_text_obj_draw(NtrCpu* c) {
     const int32_t screen_x = static_cast<int32_t>(c->r[1]);
     const int32_t screen_y = static_cast<int32_t>(c->r[2]);
     // Exact 2D engine resolution (matches fn_main_02032fa0 -> fn_main_020353e4).
-    const int engine = (ntr_rd8(c, ph::kSingleEngineFlag) != 0) ? 0 : (ntr_rd8(c, this_obj + 80u) ? 1 : 0);
+    const int engine = (ntr_rd8(c, ph::g_single_engine_flag) != 0) ? 0 : (ntr_rd8(c, this_obj + 80u) ? 1 : 0);
     // Exact 4-bit hardware OBJ palette from sprite 0's OAM attr2 at this + 88 (bits 12..15).
     const uint8_t pal_idx = static_cast<uint8_t>((ntr_rd16(c, this_obj + 88u) >> 12) & 0xFu);
 
@@ -353,8 +359,8 @@ extern "C" void ph_text_obj_draw(NtrCpu* c) {
 // Commits each 2D engine's pending HD text list at exact OAM flush time and resolves live OBJ palette & brightness.
 extern "C" void ph_text_oam_flush(NtrCpu* c) {
     int engine = -1;
-    if (c->r[0] == ph::kOamMgrEngineA) engine = 0;
-    else if (c->r[0] == ph::kOamMgrEngineB) engine = 1;
+    if (c->r[0] == ph::g_oam_mgr_a) engine = 0;
+    else if (c->r[0] == ph::g_oam_mgr_b) engine = 1;
     else return;
 
     const uint32_t dispcnt = ntr_rd32(c, engine == 0 ? ph::kDispCntA : ph::kDispCntB);

@@ -45,10 +45,12 @@ namespace ph {
 bool select_release(const std::string& game_code) {
     if (game_code == "AZEE") {
         A = &kUsa;
+        hd_text_set_addresses(0x02063DECu, 0x020660C0u, 0x027E0C54u);
         return true;
     }
     if (game_code == "AZEP") {
         A = &kEur;
+        hd_text_set_addresses(0x02063E4Cu, 0x02066120u, 0x027E0C54u);
         return true;
     }
     return false;
