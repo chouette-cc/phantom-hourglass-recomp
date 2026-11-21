@@ -357,7 +357,8 @@ const GlPresenter::HdAtlasGlyph* GlPresenter::get_hd_glyph(uint16_t codepoint) {
     return &it->second;
 }
 
-void GlPresenter::draw_hd_text(int layer, const Rect& where, int wide_extra, const HudMove* hud, int hud_count) {
+void GlPresenter::draw_hd_text(int layer, const Rect& where, int wide_extra, const HudMove* hud, int hud_count,
+                               const Rect* clip) {
     hd_text_draw_list(layer, hd_scratch_);
     if (hd_scratch_.empty() || where.w <= 0.0f || where.h <= 0.0f) return;
     if (!hd_font_info()) return;
@@ -371,11 +372,12 @@ void GlPresenter::draw_hd_text(int layer, const Rect& where, int wide_extra, con
         reset_hd_atlas(target_cap_px);
     }
 
-    // Clip HD text strictly to the DS screen rectangle (OpenGL scissor Y originates at window bottom).
-    const int sc_x = std::clamp(int(std::floor(where.x)), 0, width_);
-    const int sc_y = std::clamp(int(std::floor(float(height_) - (where.y + where.h))), 0, height_);
-    const int sc_w = std::clamp(int(std::ceil(where.w)), 0, width_ - sc_x);
-    const int sc_h = std::clamp(int(std::ceil(where.h)), 0, height_ - sc_y);
+    // Clip HD text strictly to the target rectangle (OpenGL scissor Y originates at window bottom).
+    const Rect& cr = clip ? *clip : where;
+    const int sc_x = std::clamp(int(std::floor(cr.x)), 0, width_);
+    const int sc_y = std::clamp(int(std::floor(float(height_) - (cr.y + cr.h))), 0, height_);
+    const int sc_w = std::clamp(int(std::ceil(cr.w)), 0, width_ - sc_x);
+    const int sc_h = std::clamp(int(std::ceil(cr.h)), 0, height_ - sc_y);
     glEnable(GL_SCISSOR_TEST);
     glScissor(sc_x, sc_y, sc_w, sc_h);
 

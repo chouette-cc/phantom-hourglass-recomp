@@ -38,7 +38,9 @@ public:
     // Layer 0 top, 1 bottom. `wide`: a widescreen picture's wide screen is shown whole (else its middle 256 pixels).
     void screen(const ntr::Frame& frame, int layer, const Rect& where, bool smooth, bool wide = false);
     // Optional HD vector text overlay for layer (0 top, 1 bottom), aligned to `where` (and any widescreen HUD moves).
-    void draw_hd_text(int layer, const Rect& where, int wide_extra, const HudMove* hud = nullptr, int hud_count = 0);
+    // When `clip` is non-null, scissor-clips to `*clip` instead of `where` (used for cropped mod screen strips).
+    void draw_hd_text(int layer, const Rect& where, int wide_extra, const HudMove* hud = nullptr, int hud_count = 0,
+                      const Rect* clip = nullptr);
     // Extended screen draw for mods: sub-rect in normalized [0..1] screen coordinates, opacity and tint (0xAARRGGBB).
     void screen_ex(const ntr::Frame& frame, int layer, const Rect& where, float u0, float v0, float u1, float v1,
                    bool smooth, bool wide = false, float alpha = 1.0f, uint32_t tint_argb = 0xFFFFFFFFu);
