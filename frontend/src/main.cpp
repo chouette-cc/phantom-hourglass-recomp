@@ -363,6 +363,7 @@ struct Shared {
     int menu_page = 0;
     int menu_selected_mod = 0;
     int menu_mod_subpage = 0;
+    int menu_mod_cfg_scroll = 0;
     int menu_catalog_scroll = 0;
     std::string menu_confirm_native_id;
     std::string menu_confirm_remove_id;
@@ -764,7 +765,7 @@ private:
     void draw(const ntr::Frame& frame, bool count_game_frame = true, const std::string& window_shot_path = {}) {
         Settings view;
         bool menu_open, video_dirty, capturing_hotkey = false;
-        int selected, page, selected_mod, mod_subpage = 0, catalog_scroll = 0;
+        int selected, page, selected_mod, mod_subpage = 0, mod_cfg_scroll = 0, catalog_scroll = 0;
         std::string capture_mod_id, capture_cfg_key, confirm_native_id, confirm_remove_id;
         {
             std::lock_guard<std::mutex> lock(s_.view_mutex);
@@ -774,13 +775,14 @@ private:
             page = s_.menu_page;
             selected_mod = s_.menu_selected_mod;
             mod_subpage = s_.menu_mod_subpage;
+            mod_cfg_scroll = s_.menu_mod_cfg_scroll;
             catalog_scroll = s_.menu_catalog_scroll;
             confirm_native_id = s_.menu_confirm_native_id;
             confirm_remove_id = s_.menu_confirm_remove_id;
             capturing_hotkey = s_.menu_capturing_hotkey;
             capture_mod_id = s_.menu_capture_mod_id;
             capture_cfg_key = s_.menu_capture_cfg_key;
-            (void)selected, (void)page, (void)selected_mod, (void)mod_subpage, (void)catalog_scroll;
+            (void)selected, (void)page, (void)selected_mod, (void)mod_subpage, (void)mod_cfg_scroll, (void)catalog_scroll;
             (void)capturing_hotkey, (void)capture_mod_id, (void)capture_cfg_key, (void)confirm_native_id, (void)confirm_remove_id;
             video_dirty = s_.video_dirty;
             s_.video_dirty = false;
@@ -892,6 +894,7 @@ private:
             menu.selected = selected;
             menu.selected_mod = selected_mod;
             menu.mod_subpage = mod_subpage;
+            menu.mod_cfg_scroll = mod_cfg_scroll;
             menu.catalog_scroll = catalog_scroll;
             menu.confirm_native_id = confirm_native_id;
             menu.confirm_remove_id = confirm_remove_id;
@@ -911,6 +914,7 @@ private:
             if (mods_) ms.mods = mods_->summaries();
             if (s_.mod_catalog && page == 2) ms.catalog = s_.mod_catalog->snapshot();
             ms.selected_mod = selected_mod;
+            ms.mod_cfg_scroll = mod_cfg_scroll;
             const int layer = view.layout == Layout::Top ? 0 : 1;  // the screen the player looks at
             menu.draw(*gl_, ms, float(w), float(h), ui, float(ph::pad::game_fps10.load()) / 10.0f,
                       [&](int slot, const ph::Rect& r) { gl_->thumbnail(slot, layer, r); });
@@ -1468,6 +1472,7 @@ int main(int argc, char** argv) {
         shared.menu_page = menu.page;
         shared.menu_selected_mod = menu.selected_mod;
         shared.menu_mod_subpage = menu.mod_subpage;
+        shared.menu_mod_cfg_scroll = menu.mod_cfg_scroll;
         shared.menu_catalog_scroll = menu.catalog_scroll;
         shared.menu_confirm_native_id = menu.confirm_native_id;
         shared.menu_confirm_remove_id = menu.confirm_remove_id;
@@ -1500,6 +1505,7 @@ int main(int argc, char** argv) {
             if (menu.page == 2) ms.catalog = mod_catalog.snapshot();
         }
         ms.selected_mod = menu.selected_mod;
+        ms.mod_cfg_scroll = menu.mod_cfg_scroll;
         return ms;
     };
     auto menu_done = [&](const ph::MenuState& ms, ph::MenuResult r) {

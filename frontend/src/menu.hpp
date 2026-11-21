@@ -43,6 +43,7 @@ struct MenuState {
     std::vector<ModSummary> mods;
     ModCatalogSnapshot catalog;
     int selected_mod = 0;
+    int mod_cfg_scroll = 0;
     std::string action_mod_id;
     std::string action_cfg_key;
     std::string action_cfg_str;
@@ -64,6 +65,7 @@ public:
     int selected = 0;
     int selected_mod = 0;
     int mod_subpage = 0;       // 0 Installed, 1 Browse Online
+    int mod_cfg_scroll = 0;
     int catalog_scroll = 0;
     std::string confirm_native_id;
     std::string confirm_remove_id;
@@ -104,6 +106,7 @@ private:
     };
     struct ModCfgGeom {
         std::string key;
+        size_t item_index = 0;
         ModConfigItem::Kind kind = ModConfigItem::Kind::Bool;
         Rect label_rect;
         Rect minus_rect;
@@ -122,6 +125,11 @@ private:
         std::vector<ModRowGeom> mod_rows;
         std::vector<ModCfgGeom> mod_cfgs;
         Rect mod_info_rect;
+        Rect mod_cfg_prev;
+        Rect mod_cfg_next;
+        int mod_cfg_start = 0;
+        int mod_cfg_visible = 0;
+        int mod_cfg_total = 0;
         Rect mod_reload_btn;
         Rect mod_remove_btn;
         // Mods Browse Online subpage:
