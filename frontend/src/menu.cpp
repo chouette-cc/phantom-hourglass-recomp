@@ -159,11 +159,24 @@ Menu::Geometry Menu::geometry(const MenuState& s, float win_w, float win_h, floa
         const float btn_w = 30 * ui;
         const float ctrl_w = (p.w - 2 * pad) * 0.48f;
         const float lbl_w = (p.w - 2 * pad) - ctrl_w - gap;
-        for (const ModConfigItem& cfg : mod.config) {
-            if (my + row_h > list_limit) break;
+        const float step_h = row_h + gap;
+        const int total_cfgs = int(mod.config.size());
+        const int fit_full = std::max(0, int((list_limit - my + gap) / step_h));
+        const bool need_scroll = total_cfgs > fit_full && fit_full >= 2;
+        const float scroll_bar_h = need_scroll ? (26 * ui + gap) : 0.0f;
+        const float cfg_limit = list_limit - scroll_bar_h;
+        const int visible = std::max(1, int((cfg_limit - my + gap) / step_h));
+        const int max_start = std::max(0, total_cfgs - visible);
+        const int start = std::clamp(s.mod_cfg_scroll, 0, max_start);
+        g.mod_cfg_start = start;
+        g.mod_cfg_visible = visible;
+        g.mod_cfg_total = total_cfgs;
+        for (int i = start; i < total_cfgs && my + row_h <= cfg_limit + 0.5f; i++) {
+            const ModConfigItem& cfg = mod.config[size_t(i)];
             const float cx = p.x + pad + lbl_w + gap;
             ModCfgGeom cg;
             cg.key = cfg.key;
+            cg.item_index = size_t(i);
             cg.kind = cfg.kind;
             cg.label_rect = {p.x + pad, my, lbl_w, row_h};
             if (cfg.kind == ModConfigItem::Kind::Bool || cfg.kind == ModConfigItem::Kind::Hotkey) {
@@ -174,7 +187,13 @@ Menu::Geometry Menu::geometry(const MenuState& s, float win_w, float win_h, floa
                 cg.plus_rect = {cx + ctrl_w - btn_w, my, btn_w, row_h};
             }
             g.mod_cfgs.push_back(std::move(cg));
-            my += row_h + gap;
+            my += step_h;
+        }
+        if (need_scroll) {
+            const float sy = cfg_limit + 2 * ui;
+            const float nav_w = 82 * ui;
+            g.mod_cfg_prev = {p.x + pad, sy, nav_w, 24 * ui};
+            g.mod_cfg_next = {p.x + p.w - pad - nav_w, sy, nav_w, 24 * ui};
         }
     }
 
@@ -309,9 +328,13 @@ MenuResult Menu::key(SDL_Scancode key, MenuState& s) {
         if (!s.mods.empty()) {
             const int n = int(s.mods.size());
             selected_mod = std::clamp(selected_mod, 0, n - 1);
-            if (key == SDL_SCANCODE_UP) { selected_mod = (selected_mod + n - 1) % n; confirm_remove_id.clear(); }
-            if (key == SDL_SCANCODE_DOWN) { selected_mod = (selected_mod + 1) % n; confirm_remove_id.clear(); }
+            if (key == SDL_SCANCODE_UP) { selected_mod = (selected_mod + n - 1) % n; mod_cfg_scroll = 0; confirm_remove_id.clear(); }
+            if (key == SDL_SCANCODE_DOWN) { selected_mod = (selected_mod + 1) % n; mod_cfg_scroll = 0; confirm_remove_id.clear(); }
+            const int max_cfg = std::max(0, int(s.mods[size_t(selected_mod)].config.size()) - 1);
+            if (key == SDL_SCANCODE_PAGEUP) mod_cfg_scroll = std::max(0, mod_cfg_scroll - 4);
+            if (key == SDL_SCANCODE_PAGEDOWN) mod_cfg_scroll = std::min(max_cfg, mod_cfg_scroll + 4);
             s.selected_mod = selected_mod;
+            s.mod_cfg_scroll = mod_cfg_scroll;
             if (key == SDL_SCANCODE_RETURN || key == SDL_SCANCODE_SPACE) {
                 const ModSummary& m = s.mods[size_t(selected_mod)];
                 s.action_mod_id = m.id;
@@ -371,10 +394,16 @@ MenuResult Menu::key(SDL_Scancode key, MenuState& s) {
 
 void Menu::wheel(float delta_y, const MenuState& s) {
     if (!open) return;
-    if (page == 2 && mod_subpage == 1) {
-        const int max_scroll = std::max(0, int(s.catalog.entries.size()) - 1);
+    if (page == 2) {
         const int step = delta_y > 0 ? -2 : (delta_y < 0 ? 2 : 0);
-        catalog_scroll = std::clamp(catalog_scroll + step, 0, max_scroll);
+        if (mod_subpage == 1) {
+            const int max_scroll = std::max(0, int(s.catalog.entries.size()) - 1);
+            catalog_scroll = std::clamp(catalog_scroll + step, 0, max_scroll);
+        } else if (!s.mods.empty()) {
+            const int idx = std::clamp(selected_mod, 0, int(s.mods.size()) - 1);
+            const int max_scroll = std::max(0, int(s.mods[size_t(idx)].config.size()) - 1);
+            mod_cfg_scroll = std::clamp(mod_cfg_scroll + step, 0, max_scroll);
+        }
         return;
     }
     if (page == 3) {
@@ -387,6 +416,7 @@ void Menu::wheel(float delta_y, const MenuState& s) {
 
 MenuResult Menu::click(float x, float y, float win_w, float win_h, float ui, MenuState& s) {
     s.selected_mod = selected_mod;
+    s.mod_cfg_scroll = mod_cfg_scroll;
     const Geometry g = geometry(s, win_w, win_h, ui);
     if (!g.panel.contains(x, y)) {
         open = false;
@@ -475,20 +505,37 @@ MenuResult Menu::click(float x, float y, float win_w, float win_h, float ui, Men
             s.action_mod_id = mid;
             return MenuResult::UninstallMod;
         }
+        if (g.mod_cfg_prev.w > 0 && g.mod_cfg_prev.contains(x, y)) {
+            capturing_hotkey = false;
+            mod_cfg_scroll = std::max(0, g.mod_cfg_start - std::max(1, g.mod_cfg_visible - 1));
+            s.mod_cfg_scroll = mod_cfg_scroll;
+            return MenuResult::None;
+        }
+        if (g.mod_cfg_next.w > 0 && g.mod_cfg_next.contains(x, y)) {
+            capturing_hotkey = false;
+            const int max_s = std::max(0, g.mod_cfg_total - g.mod_cfg_visible);
+            mod_cfg_scroll = std::min(max_s, g.mod_cfg_start + std::max(1, g.mod_cfg_visible - 1));
+            s.mod_cfg_scroll = mod_cfg_scroll;
+            return MenuResult::None;
+        }
         confirm_remove_id.clear();
         for (size_t i = 0; i < g.mod_rows.size() && i < s.mods.size(); i++) {
             if (g.mod_rows[i].toggle_rect.contains(x, y)) {
                 capturing_hotkey = false;
+                if (selected_mod != int(i)) mod_cfg_scroll = 0;
                 selected_mod = int(i);
                 s.selected_mod = selected_mod;
+                s.mod_cfg_scroll = mod_cfg_scroll;
                 s.action_mod_id = s.mods[i].id;
                 s.action_mod_enable = !s.mods[i].enabled;
                 return MenuResult::ToggleMod;
             }
             if (g.mod_rows[i].select_rect.contains(x, y)) {
                 capturing_hotkey = false;
+                if (selected_mod != int(i)) mod_cfg_scroll = 0;
                 selected_mod = int(i);
                 s.selected_mod = selected_mod;
+                s.mod_cfg_scroll = mod_cfg_scroll;
                 return MenuResult::None;
             }
         }
@@ -738,9 +785,10 @@ void Menu::draw_panel(GlPresenter& gl, const MenuState& s, float win_w, float wi
                                    (cur.has_overlay ? " [overlay]" : "");
                 gl.text(g.mod_info_rect.x, g.mod_info_rect.y + small + 4 * ui, small * 0.9f, meta, kAccent);
             }
-            for (size_t i = 0; i < g.mod_cfgs.size() && i < cur.config.size(); i++) {
+            for (size_t i = 0; i < g.mod_cfgs.size(); i++) {
                 const ModCfgGeom& cg = g.mod_cfgs[i];
-                const ModConfigItem& ci = cur.config[i];
+                if (cg.item_index >= cur.config.size()) continue;
+                const ModConfigItem& ci = cur.config[cg.item_index];
                 const float lsz = std::min(small * 1.1f, (cg.label_rect.w - 4 * ui) / float(std::max<size_t>(ci.label.size(), 1)));
                 gl.text(cg.label_rect.x, cg.label_rect.y + (cg.label_rect.h - lsz) / 2, lsz, ci.label, kWhite);
                 if (ci.kind == ModConfigItem::Kind::Bool) {
@@ -772,6 +820,19 @@ void Menu::draw_panel(GlPresenter& gl, const MenuState& s, float win_w, float wi
                     chip(gl, cg.value_rect, val, false, true, text * 0.85f, ui);
                     chip(gl, cg.plus_rect, ">", false, true, text * 0.9f, ui);
                 }
+            }
+            if (g.mod_cfg_prev.w > 0) {
+                const int end_i = std::min(g.mod_cfg_total, g.mod_cfg_start + int(g.mod_cfgs.size()));
+                const bool can_prev = g.mod_cfg_start > 0;
+                const bool can_next = end_i < g.mod_cfg_total;
+                chip(gl, g.mod_cfg_prev, "< Prev", false, can_prev, 11 * ui, ui);
+                chip(gl, g.mod_cfg_next, "Next >", false, can_next, 11 * ui, ui);
+                const std::string pg = std::to_string(g.mod_cfg_start + 1) + "-" + std::to_string(end_i) +
+                                       " / " + std::to_string(g.mod_cfg_total);
+                const float mid_w = g.mod_cfg_next.x - (g.mod_cfg_prev.x + g.mod_cfg_prev.w);
+                const float psz = std::min(10.5f * ui, (mid_w - 8 * ui) / float(std::max<size_t>(1, pg.size())));
+                gl.text(g.mod_cfg_prev.x + g.mod_cfg_prev.w + (mid_w - psz * float(pg.size())) / 2,
+                        g.mod_cfg_prev.y + (g.mod_cfg_prev.h - psz) / 2, psz, pg, kHint);
             }
         }
         chip(gl, g.mod_reload_btn, "Reload (F6)", false, true, text * 0.9f, ui);
